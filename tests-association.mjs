@@ -110,6 +110,14 @@ assert.equal(fallbackHospitalRows[0].__principioAtivo, 'GENCITABINA', 'readHospi
 assert.equal(fallbackHospitalRows[0].__codBarra, '7896094207257', 'readHospitalRows usa a coluna V como CodBarra');
 assert.equal(fallbackHospitalRows[0].__qtde, 1300, 'readHospitalRows usa a coluna K como Qtde');
 assert.equal(fallbackHospitalRows[0].__lote, 'L:26A0739 V:31/01/28; L:26A0728 V:31/01/28', 'readHospitalRows usa a coluna S como Lote');
+
+const hospitalRowsWithWrongMedicineHeader = readHospitalRows(fakeSheet([
+  ['Cliente', 'Coluna B', 'Data', 'Paciente', 'Tipo', 'Documento', 'Unidade', 'OS', 'Produto físico', 'Medicamento', 'Qtde', 'Desc 1', 'Desc 2', 'Setor', 'Coluna O', 'PrincipioAtivo', 'Carteira', 'Convenio', 'Lote', 'Extra 1', 'Extra 2', 'CodBarra'],
+  ['HOSPITAL ANA COSTA', 'HOSPITAL ANA COSTA S/A', '01/06/2026', 'ODETE DE SOUSA', 'NFe', '1122056', 'QT', '1.315.669,00', 'GENLIBBS', 'mg', '1.300,00', '0,00', '0,00', 'AMBULATORIO', 'GENLIBBS', 'GENCITABINA', 'Corporativo', 'AMIL', 'L:26A0739 V:31/01/28; L:26A0728 V:31/01/28', '', '1082', '7896094207257'],
+]), []);
+assert.equal(hospitalRowsWithWrongMedicineHeader[0].__medicamento, 'GENLIBBS', 'readHospitalRows nunca usa coluna J como Medicamento Hospital quando ela contém mg');
+assert.equal(hospitalRowsWithWrongMedicineHeader[0].__medicamentoAlternativo, 'GENLIBBS', 'readHospitalRows preenche Medicamento Alternativo pela coluna O mesmo com cabeçalho diferente');
+
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__unidadeDestino').length, 1, 'controlRow contém __unidadeDestino apenas uma vez');
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__validade').length, 1, 'controlRow contém __validade apenas uma vez');
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__lote').length, 1, 'controlRow contém __lote apenas uma vez');
@@ -203,6 +211,17 @@ assert.equal(genlibbsControlRows[0].__key, '1315669|7896094207257', 'controle GE
 assert.ok(genlibbsAssociations.find((item) => item.hospitalRowId === 9 && item.controlRowId === 10), 'controle GENLIBBS associa somente após criar chave OS+CodBarra');
 assert.equal(genlibbsAssociations[0].statusAssociacao, 'Com otimização', 'controle GENLIBBS gera status Com otimização');
 
+const genlibbsEquivalenceValidations = [];
+const genlibbsEquivalenceHospitalRows = [
+  hospital({ __rowId: 16, __os: '1.315.669,00', __codBarra: '7896094207257', __qtde: 1300, __medicamento: '', __medicamentoColunaI: '', __medicamentoAlternativo: '', __principioAtivo: 'GENCITABINA' }),
+];
+const genlibbsEquivalenceControlRows = [
+  control({ __rowId: 17, __os: '1.315.669,00', __qtde: 100, __medicamento: 'GENLIBBS - qualquer concentração', __unidadeDestino: 'HOSPITAL ANA COSTA' }),
+];
+const genlibbsEquivalenceAssociations = associateRows(genlibbsEquivalenceHospitalRows, genlibbsEquivalenceControlRows, genlibbsEquivalenceValidations, 'Hospital Ana Costa');
+assert.equal(genlibbsEquivalenceControlRows[0].__codBarraProdutoHospital, '7896094207257', 'controle GENLIBBS localiza CodBarra por equivalência com GENCITABINA');
+assert.ok(genlibbsEquivalenceAssociations.find((item) => item.hospitalRowId === 16 && item.controlRowId === 17), 'equivalência GENLIBBS/GENCITABINA serve para identificar CodBarra antes da associação OS+CodBarra');
+
 const mismatchValidations = [];
 associateRows(
   [hospital({ __rowId: 11, __os: '1234567', __codBarra: '7897000', __qtde: 10, __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' })],
@@ -210,7 +229,18 @@ associateRows(
   mismatchValidations,
   'Hospital Teste',
 );
-assert.ok(mismatchValidations.some((item) => item.Mensagem === 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.'), 'registra mensagem específica quando OS existe mas Medicamento Base não corresponde');
+const mismatchValidation = mismatchValidations.find((item) => item.Mensagem === 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.');
+assert.ok(mismatchValidation, 'registra mensagem específica quando OS existe mas Medicamento Base não corresponde');
+assert.equal(mismatchValidation['OS controle'], '1234567', 'VALIDACAO mostra OS controle quando recusa uma otimização');
+assert.equal(mismatchValidation['OS normalizada controle'], '1234567', 'VALIDACAO mostra OS normalizada controle quando recusa uma otimização');
+assert.equal(mismatchValidation['Medicamento controle'], 'KEYTRUDA - 100MG', 'VALIDACAO mostra Medicamento controle quando recusa uma otimização');
+assert.equal(mismatchValidation['Medicamento Base controle'], 'KEYTRUDA', 'VALIDACAO mostra Medicamento Base controle quando recusa uma otimização');
+assert.equal(mismatchValidation['Encontrou OS no hospital'], 'SIM', 'VALIDACAO mostra se encontrou OS no hospital quando recusa uma otimização');
+assert.equal(mismatchValidation['Medicamento Hospital candidato coluna I'], 'GENLIBBS', 'VALIDACAO mostra candidato da coluna I quando recusa uma otimização');
+assert.equal(mismatchValidation['Medicamento Alternativo candidato coluna O'], 'GENLIBBS', 'VALIDACAO mostra candidato da coluna O quando recusa uma otimização');
+assert.equal(mismatchValidation['PrincipioAtivo candidato coluna P'], 'GENCITABINA', 'VALIDACAO mostra PrincipioAtivo candidato quando recusa uma otimização');
+assert.equal(mismatchValidation['CodBarra candidato coluna V'], '7897000', 'VALIDACAO mostra CodBarra candidato quando recusa uma otimização');
+assert.equal(mismatchValidation['Motivo exato da recusa'], 'OS encontrada, mas medicamento diferente', 'VALIDACAO mostra motivo exato da recusa quando recusa uma otimização');
 
 const multiBarcodeValidations = [];
 associateRows(
