@@ -148,16 +148,21 @@ function readHospitalRows(sheet, validations) {
       __data: getByCandidates(object, ['Data', 'Dt Atendimento', 'Data Atendimento'], 2),
       __cliente: String(getByCandidates(object, ['Cliente', 'Unidade', 'Hospital'], 3) ?? ''),
       __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente'], 4) ?? ''),
-      __medicamento: String(getByCandidates(object, ['Medicamento', 'Produto', 'Descrição', 'Descricao'], 10) ?? ''),
-      __principioAtivo: String(getByCandidates(object, ['PrincipioAtivo', 'Princípio Ativo', 'Principio Ativo'], 16) ?? ''),
+      __medicamento: String(getByExactHeaderOrPosition(object, ['Medicamento Hospital', 'Medicamento', 'Descrição', 'Descricao'], 9) ?? ''),
+      __produtoHospital: String(getByExactHeaderOrPosition(object, ['Produto Hospital', 'Produto']) ?? ''),
+      __medicamentoColunaI: String(getByPosition(object, 9) ?? ''),
+      __medicamentoAlternativo: String(getByExactHeaderOrPosition(object, ['Medicamento Alternativo', 'Nome Comercial', 'Comercial'], 15) ?? ''),
+      __principioAtivo: String(getByExactHeaderOrPosition(object, ['PrincipioAtivo', 'Princípio Ativo', 'Principio Ativo'], 16) ?? ''),
       __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'], 22)),
       __qtde: toNumber(getByCandidates(object, ['Qtde', 'Quantidade', 'Qtd'], 11)),
       __lote: String(getByCandidates(object, ['Lote'], 19) ?? ''),
-      __os: String(getByCandidates(object, ['OS', 'Ordem de serviço', 'Ordem de Servico', 'Ordem Serviço']) ?? ''),
+      __os: String(getByCandidates(object, ['OS', 'Ordem de serviço', 'Ordem de Servico', 'Ordem Serviço'], 8) ?? ''),
     };
 
     hospitalRow.__osNormalizada = normalizeOS(hospitalRow.__os);
     hospitalRow.__medicamentoNormalizado = normalizeMedicineProduct(hospitalRow.__medicamento);
+    hospitalRow.__produtoHospitalNormalizado = normalizeMedicineProduct(hospitalRow.__produtoHospital);
+    hospitalRow.__medicamentoAlternativoNormalizado = normalizeMedicineProduct(hospitalRow.__medicamentoAlternativo);
     hospitalRow.__principioAtivoNormalizado = normalizeMedicineProduct(hospitalRow.__principioAtivo);
     hospitalRow.__key = buildKey(hospitalRow.__osNormalizada, hospitalRow.__codBarra);
     hospitalRow.__isExcluded = isExcludedItem(hospitalRow.__medicamento);
@@ -231,6 +236,9 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
     hospital.__codBarra = normalizeBarcode(hospital.__codBarra);
     hospital.__key = buildKey(hospital.__osNormalizada, hospital.__codBarra);
     hospital.__medicamentoNormalizado = normalizeMedicineProduct(hospital.__medicamento);
+    hospital.__produtoHospitalNormalizado = normalizeMedicineProduct(hospital.__produtoHospital);
+    hospital.__medicamentoColunaINormalizado = normalizeMedicineProduct(hospital.__medicamentoColunaI);
+    hospital.__medicamentoAlternativoNormalizado = normalizeMedicineProduct(hospital.__medicamentoAlternativo);
     hospital.__principioAtivoNormalizado = normalizeMedicineProduct(hospital.__principioAtivo);
 
     if (!hospital.__osNormalizada) {
@@ -286,8 +294,8 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
 
     const compatible = dateCompatibleRows.filter((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
     if (!compatible.length) {
-      refuseControl(control, validations, 'Tentativa de associação apenas por OS', 'MATCH FRACO recusado: OS encontrada, mas medicamento não compatível.');
-      validations.push(validation('Divergência de medicamento', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'OS encontrada, mas medicamento não compatível.'));
+      refuseControl(control, validations, 'Tentativa de associação apenas por OS', 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.');
+      validations.push(validation('Divergência de medicamento', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.'));
       continue;
     }
 
@@ -297,8 +305,8 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
       continue;
     }
     if (possibleBarcodes.length > 1) {
-      refuseControl(control, validations, 'Múltiplos CodBarra possíveis na mesma OS', 'Múltiplos CodBarra possíveis para a mesma OS e medicamento.');
-      validations.push(validation('Múltiplos CodBarra possíveis na mesma OS', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Múltiplos CodBarra possíveis para a mesma OS e medicamento.'));
+      refuseControl(control, validations, 'Múltiplos CodBarra possíveis na mesma OS', 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.');
+      validations.push(validation('Múltiplos CodBarra possíveis na mesma OS', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.'));
       continue;
     }
 
@@ -437,7 +445,7 @@ function unusedOptimizationReason(control, hospitalRows) {
   if (!sameOS.length) {
     return { ...base, message: validationDetails(control, 'OS não encontrada no hospital') };
   }
-  const compatibleMedicine = sameOS.filter((hospital) => medicineCompatible(control.__medicamentoNormalizado, hospital));
+  const compatibleMedicine = sameOS.filter((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
   if (!compatibleMedicine.length) {
     return { ...base, message: validationDetails(control, 'OS encontrada, mas medicamento diferente') };
   }
@@ -674,6 +682,10 @@ function normalizeCell(value) {
   return value;
 }
 
+function getByPosition(object, position) {
+  return Object.entries(object)[position - 1]?.[1] ?? null;
+}
+
 function getByCandidates(object, candidates, fallbackIndex) {
   const entries = Object.entries(object);
   for (const candidate of candidates) {
@@ -811,11 +823,25 @@ function normalizeMedicineProduct(value) {
 }
 
 function medicineCompatible(controlMedicine, hospital) {
-  const control = normalizeMedicineProduct(controlMedicine);
+  const control = normalizeMedicineNameForComparison(controlMedicine);
   if (!control) return false;
-  const medicine = normalizeMedicineProduct(hospital.__medicamento);
-  const active = normalizeMedicineProduct(hospital.__principioAtivo);
-  return compatibleNormalizedMedicine(control, medicine) || compatibleNormalizedMedicine(control, active);
+  const candidates = [
+    hospital.__medicamento,
+    hospital.__produtoHospital,
+    hospital.__medicamentoColunaI,
+    hospital.__medicamentoAlternativo,
+    hospital.__principioAtivo,
+  ];
+  return candidates.some((candidate) => compatibleNormalizedMedicine(control, normalizeMedicineNameForComparison(candidate)));
+}
+
+function normalizeMedicineNameForComparison(value) {
+  const beforeDash = String(value ?? '').split('-')[0];
+  return normalizeMedicineProduct(beforeDash)
+    .replace(/\b\d+(?:[.,]\d+)?(?:MG|G|MCG|ML|L|UI)\b/g, '')
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:MG|G|MCG|ML|L|UI)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function compatibleNormalizedMedicine(control, candidate) {
@@ -904,6 +930,7 @@ export {
   formatLotWithValidity,
   optimizationStatus,
   readControlRows,
+  readHospitalRows,
   summarizeAssociations,
   validation,
 };
