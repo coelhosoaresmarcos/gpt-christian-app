@@ -90,8 +90,15 @@ assert.equal(fallbackControlRows[0].__medicamento, 'FAULDFLUOR - 500 mg', 'readC
 assert.equal(fallbackControlRows[0].__qtde, 200, 'readControlRows lê quantidade pela posição 8');
 assert.equal(fallbackControlRows[0].__lote, '25D0738', 'readControlRows lê lote pela posição 9');
 assert.equal(fallbackControlRows[0].__unidadeOrigem, 'CENTRO MEDICO PITANGUEIRAS', 'readControlRows lê Unidade de Origem pela posição 4');
+assert.equal(fallbackControlRows[0].__unidadeDestino, 'HOSPITAL SANTA HELENA', 'readControlRows lê Unidade de Destino pela posição 5');
 assert.equal(fallbackControlRows[0].__validade, '30/04/2027', 'readControlRows lê Validade pela posição 10');
+assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__unidadeOrigem').length, 1, 'controlRow contém __unidadeOrigem apenas uma vez');
+assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__unidadeDestino').length, 1, 'controlRow contém __unidadeDestino apenas uma vez');
+assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__validade').length, 1, 'controlRow contém __validade apenas uma vez');
+assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__lote').length, 1, 'controlRow contém __lote apenas uma vez');
 assert.equal(formatLotWithValidity(fallbackControlRows[0].__lote, fallbackControlRows[0].__validade), '25D0738 - Val.: 30/04/2027', 'lote e validade são combinados no formato do relatório');
+assert.equal(formatLotWithValidity('25D0738', ''), '25D0738', 'lote sem validade retorna apenas lote');
+assert.equal(formatLotWithValidity('', '30/04/2027'), 'Sem otimização', 'ausência de lote retorna Sem otimização');
 
 const positionalFallbackRows = readControlRows(fakeSheet([
   ['Tipo/Motivo', 'OS', 'Data', 'Hospital Origem', 'Hospital Destino', 'Paciente', 'Medicamento', 'Quantidade', 'Lote', 'Data Venc.', 'Laboratório'],

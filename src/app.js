@@ -183,13 +183,13 @@ function readControlRows(sheet, validations) {
       __rowId: rowNumber,
       __data: getByCandidates(object, ['Data', 'Dt', 'Data Otimização', 'Data Otimizacao'], 3),
       __os: String(getByCandidates(object, ['Ordem de serviço', 'Ordem de Servico', 'OS', 'Ordem Serviço'], 2) ?? ''),
-      __unidadeOrigem: String(getByExactHeaderOrPosition(object, ['Unidade de Origem', 'Unidade Origem'], 4) ?? ''),
-      __unidadeDestino: String(getByExactHeaderOrPosition(object, ['Unidade de Destino', 'Unidade Destino'], 5) ?? ''),
+      __unidadeOrigem: String(getByExactHeaderOrPosition(object, ['Unidade de Origem', 'Unidade Origem', 'Origem'], 4) ?? ''),
+      __unidadeDestino: String(getByExactHeaderOrPosition(object, ['Unidade de Destino', 'Unidade Destino', 'Destino'], 5) ?? ''),
       __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente'], 6) ?? ''),
       __medicamento: String(getByCandidates(object, ['Medicamento', 'Produto'], 7) ?? ''),
       __qtde: toNumber(getByCandidates(object, ['Quantidade (mg)', 'Quantidade', 'Qtde', 'Qtd'], 8)),
-      __lote: String(getByCandidates(object, ['Lote'], 9) ?? ''),
-      __validade: getByExactHeaderOrPosition(object, ['Validade'], 10),
+      __lote: String(getByExactHeaderOrPosition(object, ['Lote'], 9) ?? ''),
+      __validade: getByExactHeaderOrPosition(object, ['Validade', 'Data de Validade', 'Val.'], 10),
       __laboratorio: String(getByCandidates(object, ['Laboratório', 'Laboratorio', 'Lab'], 11) ?? ''),
       __motivo: String(getByCandidates(object, ['Tipo/Motivo', 'Tipo', 'Motivo'], 1) ?? ''),
       __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'])),
@@ -505,14 +505,19 @@ function summarizeAssociations(associations) {
     };
     current.qtdeOtimizada += association.qtdeUsada ?? 0;
     current.availableBefore = Math.max(current.availableBefore, association.qtdeDisponivelAntes ?? 0);
-    if (association.origemOtimizacao) current.origens.push(association.origemOtimizacao);
-    if (association.loteOtimizacao) current.lotes.push(association.loteOtimizacao);
-    if (association.loteOtimizacaoComValidade) current.lotesComValidade.push(association.loteOtimizacaoComValidade);
-    if (association.validadeOtimizacao) current.validades.push(formatDate(association.validadeOtimizacao));
+    pushUniqueText(current.origens, association.origemOtimizacao);
+    pushUniqueText(current.lotes, association.loteOtimizacao);
+    pushUniqueText(current.lotesComValidade, association.loteOtimizacaoComValidade);
+    pushUniqueText(current.validades, association.validadeOtimizacao ? formatDate(association.validadeOtimizacao) : '');
     current.status = optimizationStatus(current.qtdeOtimizada, association.qtdePrescrita, current.availableBefore);
     summaries.set(association.hospitalRowId, current);
   }
   return summaries;
+}
+
+function pushUniqueText(values, value) {
+  const text = String(value ?? '').trim();
+  if (text && !values.includes(text)) values.push(text);
 }
 
 function appendUniqueText(current, value) {
@@ -615,7 +620,7 @@ function downloadRecord(row, association) {
 
 function formatLotWithValidity(lote, validade) {
   const lotText = String(lote ?? '').trim();
-  if (!lotText) return '';
+  if (!lotText) return 'Sem otimização';
   const validityText = String(formatDate(validade) ?? '').trim();
   return validityText ? `${lotText} - Val.: ${validityText}` : lotText;
 }
