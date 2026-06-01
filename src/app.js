@@ -30,24 +30,27 @@ const EXCLUDED_ITEMS = [
   'INFUSOR - 250 ML - 10 ML/H',
 ];
 
-const hospitalInput = document.querySelector('#hospitalFile');
-const controlInput = document.querySelector('#controlFile');
-const hospitalFileName = document.querySelector('#hospitalFileName');
-const controlFileName = document.querySelector('#controlFileName');
-const hospitalNameInput = document.querySelector('#hospitalName');
-const processButton = document.querySelector('#processButton');
-const downloadButton = document.querySelector('#downloadButton');
-const statusElement = document.querySelector('#status');
-const resultCard = document.querySelector('#resultCard');
-const summaryElement = document.querySelector('#summary');
+const hasDocument = typeof document !== 'undefined';
+const hospitalInput = hasDocument ? document.querySelector('#hospitalFile') : null;
+const controlInput = hasDocument ? document.querySelector('#controlFile') : null;
+const hospitalFileName = hasDocument ? document.querySelector('#hospitalFileName') : null;
+const controlFileName = hasDocument ? document.querySelector('#controlFileName') : null;
+const hospitalNameInput = hasDocument ? document.querySelector('#hospitalName') : null;
+const processButton = hasDocument ? document.querySelector('#processButton') : null;
+const downloadButton = hasDocument ? document.querySelector('#downloadButton') : null;
+const statusElement = hasDocument ? document.querySelector('#status') : null;
+const resultCard = hasDocument ? document.querySelector('#resultCard') : null;
+const summaryElement = hasDocument ? document.querySelector('#summary') : null;
 
 let generatedBlob = null;
 let generatedFileName = '';
 
-hospitalInput.addEventListener('change', () => updateFileName(hospitalInput, hospitalFileName));
-controlInput.addEventListener('change', () => updateFileName(controlInput, controlFileName));
-processButton.addEventListener('click', processFiles);
-downloadButton.addEventListener('click', downloadGeneratedFile);
+if (hasDocument) {
+  hospitalInput.addEventListener('change', () => updateFileName(hospitalInput, hospitalFileName));
+  controlInput.addEventListener('change', () => updateFileName(controlInput, controlFileName));
+  processButton.addEventListener('click', processFiles);
+  downloadButton.addEventListener('click', downloadGeneratedFile);
+}
 
 function updateFileName(input, target) {
   target.textContent = input.files?.[0]?.name ? `📄 ${input.files[0].name}` : '📄 Selecionar Excel';
@@ -147,7 +150,7 @@ function readHospitalRows(sheet, validations) {
       __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente'], 4) ?? ''),
       __medicamento: String(getByCandidates(object, ['Medicamento', 'Produto', 'Descrição', 'Descricao'], 10) ?? ''),
       __principioAtivo: String(getByCandidates(object, ['PrincipioAtivo', 'Princípio Ativo', 'Principio Ativo'], 16) ?? ''),
-      __codBarra: onlyDigits(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'], 22)),
+      __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'], 22)),
       __qtde: toNumber(getByCandidates(object, ['Qtde', 'Quantidade', 'Qtd'], 11)),
       __lote: String(getByCandidates(object, ['Lote'], 19) ?? ''),
       __os: String(getByCandidates(object, ['OS', 'Ordem de serviço', 'Ordem de Servico', 'Ordem Serviço']) ?? ''),
@@ -183,7 +186,7 @@ function readControlRows(sheet, validations) {
       __lote: String(getByCandidates(object, ['Lote']) ?? ''),
       __motivo: String(getByCandidates(object, ['Motivo']) ?? ''),
       __unidadeDestino: String(getByCandidates(object, ['Unidade de Destino', 'Unidade Destino', 'Destino']) ?? ''),
-      __codBarra: onlyDigits(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'])),
+      __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'])),
       __status: 'Não avaliado como otimização',
       __observacao: 'Linha mantida no controle original; motivo/unidade/data serão avaliados no processamento.',
       __tipoMatch: '',
@@ -208,9 +211,11 @@ function readControlRows(sheet, validations) {
 function associateRows(hospitalRows, controlRows, validations, hospitalName) {
   const associations = [];
   const usableHospitalRows = hospitalRows.filter((row) => !row.__isExcluded);
-  const hospitalByOS = groupBy(usableHospitalRows, (row) => row.__osNormalizada);
-  const hospitalByKey = groupBy(usableHospitalRows, (row) => row.__key);
-  const consumedKeys = new Set();
+  const controlByKey = groupBy(controlRows, (row) => row.__key);
+  const hospitalKeys = new Set(usableHospitalRows.map((row) => row.__key).filter(Boolean));
+  const hospitalOS = new Set(usableHospitalRows.map((row) => row.__osNormalizada).filter(Boolean));
+  const hospitalBarcodes = new Set(usableHospitalRows.map((row) => row.__codBarra).filter(Boolean));
+  const controlUsage = new Map();
 
   if (!hospitalName) {
     validations.push({ Tipo: 'Filtro de otimização', Severidade: 'ALERTA', Aba: 'CONTROLE DE MEDICAMENTOS', Linha: 'todas', OS_Normalizada: '', CodBarra: '', Mensagem: 'Nome do hospital não informado; o filtro por Unidade de Destino não foi aplicado.' });
@@ -220,106 +225,185 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
     const isOptimization = normalizeText(control.__motivo).includes('OTIMIZA');
     const destinationOk = !hospitalName || normalizeText(control.__unidadeDestino).includes(normalizeText(hospitalName));
 
+    control.__available = Math.max(0, control.__qtde);
+    control.__remaining = control.__available;
+    control.__usedQuantity = 0;
+
+    if (!control.__osNormalizada) {
+      validations.push(validation('OS vazia no controle', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'OS ausente, nula ou em branco no controle.'));
+    }
+    if (!control.__codBarra) {
+      validations.push(validation('CodBarra vazio no controle', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'CodBarra ausente, nulo ou em branco no controle.'));
+    }
+    if (control.__osNormalizada && hospitalOS.has(control.__osNormalizada) && control.__codBarra && !hospitalKeys.has(control.__key)) {
+      validations.push(validation('Correspondência por OS, mas CodBarra diferente', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Existe OS igual no hospital, mas não existe a chave composta OS Normalizada + CodBarra Normalizado.'));
+    }
+    if (control.__codBarra && hospitalBarcodes.has(control.__codBarra) && control.__osNormalizada && !hospitalKeys.has(control.__key)) {
+      validations.push(validation('Correspondência por CodBarra, mas OS diferente', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Existe CodBarra igual no hospital, mas não existe a chave composta OS Normalizada + CodBarra Normalizado.'));
+    }
+
     if (!isOptimization) {
       control.__status = 'Fora do filtro de otimização';
       control.__observacao = 'Motivo não contém OTIMIZA.';
+      control.__remaining = 0;
       continue;
     }
     if (!destinationOk) {
       control.__status = 'Fora do filtro de otimização';
       control.__observacao = 'Unidade de Destino não contém o nome do hospital informado.';
+      control.__remaining = 0;
+      continue;
+    }
+    if (!control.__key) {
+      control.__status = 'Associação recusada';
+      control.__observacao = 'OS Normalizada e CodBarra Normalizado são obrigatórios para otimização.';
+      control.__remaining = 0;
+      continue;
+    }
+    control.__status = 'Disponível para otimização';
+    control.__observacao = 'Saldo disponível para associação exclusiva por OS Normalizada + CodBarra Normalizado.';
+  }
+
+  for (const hospital of usableHospitalRows) {
+    if (!hospital.__osNormalizada) {
+      validations.push(validation('OS vazia no hospital', 'BLOQUEIO', 'HOSPITAL_ORIGINAL', hospital.__rowId, hospital, 'OS ausente, nula ou em branco no hospital.'));
+    }
+    if (!hospital.__codBarra) {
+      validations.push(validation('CodBarra vazio no hospital', 'BLOQUEIO', 'HOSPITAL_ORIGINAL', hospital.__rowId, hospital, 'CodBarra ausente, nulo ou em branco no hospital.'));
+    }
+
+    const controls = (controlByKey.get(hospital.__key) ?? []).filter((control) => ['Disponível para otimização', 'Parcialmente consumido'].includes(control.__status) && control.__remaining > 0);
+    const availableBefore = controls.reduce((sum, control) => sum + control.__remaining, 0);
+    let remainingPrescription = Math.max(0, hospital.__qtde);
+    let optimizedQuantity = 0;
+
+    if (!hospital.__key || controls.length === 0) {
+      const reason = !hospital.__key ? 'OS Normalizada e CodBarra Normalizado são obrigatórios para associar.' : 'Nenhum registro no controle com a mesma OS Normalizada + CodBarra Normalizado.';
+      associations.push(associationRecord(hospital, null, 0, 'Sem otimização', reason, availableBefore));
+      validations.push(validation('Itens sem correspondência', 'ALERTA', 'HOSPITAL_ORIGINAL', hospital.__rowId, hospital, reason));
       continue;
     }
 
-    const candidatesByOS = hospitalByOS.get(control.__osNormalizada) ?? [];
-    if (candidatesByOS.length === 0) {
-      refuseControl(control, validations, 'Otimização sem correspondência segura', 'Nenhum item do hospital com a mesma OS normalizada.');
-      continue;
-    }
+    for (const control of controls) {
+      if (remainingPrescription <= 0) break;
+      if (control.__remaining <= 0) continue;
 
-    const dateMatches = candidatesByOS.filter((hospital) => sameDayMonth(hospital.__data, control.__data));
-    if (dateMatches.length === 0) {
-      refuseControl(control, validations, 'Associação recusada', 'OS encontrada, mas a data não coincide em dia e mês.');
-      continue;
-    }
+      const quantityToUse = Math.min(remainingPrescription, control.__remaining);
+      control.__remaining -= quantityToUse;
+      control.__usedQuantity += quantityToUse;
+      optimizedQuantity += quantityToUse;
+      remainingPrescription -= quantityToUse;
 
-    const productCandidates = dateMatches.filter((hospital) => medicineCompatible(control.__medicamentoBase, hospital));
-    if (productCandidates.length === 0) {
-      refuseControl(control, validations, 'Tentativa de associação apenas por OS', 'Apenas a OS coincidiu; medicamento/princípio ativo incompatível.');
-      continue;
-    }
-
-    const possibleBarcodes = unique(productCandidates.map((row) => row.__codBarra).filter(Boolean));
-    const originalControlBarcode = control.__codBarra;
-    if (!control.__codBarra) {
-      if (possibleBarcodes.length === 1) {
-        control.__codBarra = possibleBarcodes[0];
-        control.__key = buildKey(control.__osNormalizada, control.__codBarra);
-      } else {
-        const message = possibleBarcodes.length === 0 ? 'Ausência de CodBarra compatível no hospital.' : 'Múltiplos CodBarra possíveis para a mesma OS/medicamento.';
-        refuseControl(control, validations, possibleBarcodes.length === 0 ? 'Ausência de CodBarra compatível' : 'Múltiplos CodBarra possíveis na mesma OS', message);
-        continue;
+      const alreadyUsedBy = controlUsage.get(control.__rowId);
+      if (alreadyUsedBy && !alreadyUsedBy.has(hospital.__rowId)) {
+        validations.push(validation('Quantidade do controle reaproveitada indevidamente', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Tentativa de reaproveitar saldo de controle já consumido por outra linha do hospital.'));
       }
+      controlUsage.set(control.__rowId, new Set([...(alreadyUsedBy ?? []), hospital.__rowId]));
+
+      control.__used = true;
+      control.__status = control.__remaining > 0 ? 'Parcialmente consumido' : 'Consumido';
+      control.__observacao = 'Associado exclusivamente por OS Normalizada + CodBarra Normalizado.';
+      control.__tipoMatch = 'MATCH CHAVE COMPOSTA';
+      control.__confianca = 'Alta';
+      control.__hospitalAssociado = appendUniqueText(control.__hospitalAssociado, hospital.__os);
+      control.__dataAssociacao = appendUniqueText(control.__dataAssociacao, formatDate(hospital.__data));
+
+      associations.push(associationRecord(hospital, control, quantityToUse, '', 'Associação exata por OS Normalizada + CodBarra Normalizado.', availableBefore));
     }
 
-    const keyMatches = (hospitalByKey.get(control.__key) ?? []).filter((hospital) => medicineCompatible(control.__medicamentoBase, hospital) && sameDayMonth(hospital.__data, control.__data));
-    if (keyMatches.length === 0) {
-      refuseControl(control, validations, 'Divergência de CodBarra', 'CodBarra + OS não encontrou produto compatível no hospital.');
+    if (optimizedQuantity === 0) {
+      associations.push(associationRecord(hospital, null, 0, 'Sem otimização', 'Correspondência encontrada, mas sem saldo disponível no controle.', availableBefore));
+      validations.push(validation('Itens sem correspondência', 'ALERTA', 'HOSPITAL_ORIGINAL', hospital.__rowId, hospital, 'Correspondência por chave composta sem saldo disponível no controle.'));
       continue;
     }
-    if (consumedKeys.has(control.__key)) {
-      refuseControl(control, validations, 'Possível duplicidade de uso da otimização', 'Possível duplicidade: já existe otimização consumida para esta chave OS+CodBarra.');
-      continue;
+
+    const status = optimizationStatus(optimizedQuantity, hospital.__qtde, availableBefore);
+    for (const item of associations.filter((association) => association.hospitalRowId === hospital.__rowId && association.qtdeUsada > 0)) {
+      item.statusAssociacao = status;
+      item.motivo = status === 'Verificar excesso'
+        ? 'Quantidade disponível no controle excede a quantidade prescrita desta linha; baixa mantida como zero.'
+        : item.motivo;
     }
 
-    const hospital = keyMatches[0];
-    const type = originalControlBarcode ? 'MATCH FORTE' : 'MATCH MÉDIO';
-    const notes = [];
-    if (!sameYear(hospital.__data, control.__data) && sameDayMonth(hospital.__data, control.__data)) {
-      notes.push('Ano do controle divergente; considerada a data operacional do hospital.');
-      validations.push(validation('Correção de data por divergência de ano', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Controle ${formatDate(control.__data)} ajustado pela data do hospital ${formatDate(hospital.__data)}.`));
+    if (optimizedQuantity < hospital.__qtde) {
+      validations.push(validation('Itens sem correspondência', 'ALERTA', 'HOSPITAL_ORIGINAL', hospital.__rowId, hospital, `Saldo insuficiente no controle para a chave composta; faltam ${hospital.__qtde - optimizedQuantity}.`));
     }
-    if (normalizeText(hospital.__lote) !== normalizeText(control.__lote) && control.__lote) {
-      notes.push('Lote divergente não bloqueante.');
-      validations.push(validation('Divergência de lote, como alerta não bloqueante', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Hospital: ${hospital.__lote || 'vazio'} | Otimização: ${control.__lote || 'vazio'}.`));
-    }
-
-    control.__status = 'Associado';
-    control.__observacao = notes.join(' ') || 'Associação segura por OS normalizada + CodBarra.';
-    control.__tipoMatch = type;
-    control.__confianca = type === 'MATCH FORTE' ? 'Alta' : 'Média';
-    control.__hospitalAssociado = hospital.__os;
-    control.__dataAssociacao = formatDate(hospital.__data);
-    control.__used = true;
-    consumedKeys.add(control.__key);
-
-    associations.push({
-      osNormalizada: control.__osNormalizada,
-      codBarra: control.__codBarra,
-      key: control.__key,
-      dataHospital: hospital.__data,
-      dataControle: control.__data,
-      medicamentoHospital: hospital.__medicamento,
-      medicamentoControle: control.__medicamento,
-      principioAtivo: hospital.__principioAtivo,
-      qtdePrescrita: hospital.__qtde,
-      qtdeOtimizada: control.__qtde,
-      loteHospital: hospital.__lote,
-      loteOtimizacao: control.__lote,
-      tipoMatch: control.__tipoMatch,
-      confianca: control.__confianca,
-      observacao: control.__observacao,
-      hospitalRowId: hospital.__rowId,
-      controlRowId: control.__rowId,
-    });
   }
 
   for (const control of controlRows) {
-    if (normalizeText(control.__motivo).includes('OTIMIZA') && !control.__used && control.__status !== 'Fora do filtro de otimização') {
-      validations.push(validation('Quantidade otimizada não utilizada', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Quantidade ${control.__qtde} não aplicada em baixa.`));
+    if (control.__status === 'Disponível para otimização') {
+      control.__status = 'Não utilizado';
+      control.__observacao = 'Nenhuma linha do hospital consumiu esta chave OS Normalizada + CodBarra Normalizado.';
+    }
+    if (control.__usedQuantity > control.__available) {
+      validations.push(validation('Quantidade do controle reaproveitada indevidamente', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Uso (${control.__usedQuantity}) maior que saldo disponível (${control.__available}).`));
+    }
+    if (normalizeText(control.__motivo).includes('OTIMIZA') && control.__remaining > 0 && control.__usedQuantity > 0) {
+      validations.push(validation('Verificar excesso', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Sobra de ${control.__remaining} após otimização por chave composta.`));
     }
   }
   return associations;
+}
+
+function associationRecord(hospital, control, quantity, status, reason, availableBefore = 0) {
+  return {
+    osHospital: hospital.__os,
+    osNormalizada: hospital.__osNormalizada,
+    codBarraHospital: hospital.__codBarra,
+    codBarra: hospital.__codBarra,
+    key: hospital.__key,
+    dataHospital: hospital.__data,
+    dataControle: control?.__data ?? '',
+    medicamentoHospital: hospital.__medicamento,
+    medicamentoControle: control?.__medicamento ?? '',
+    principioAtivo: hospital.__principioAtivo,
+    qtdePrescrita: hospital.__qtde,
+    qtdeUsada: quantity,
+    qtdeOtimizada: quantity,
+    qtdeDisponivelAntes: availableBefore,
+    loteHospital: hospital.__lote,
+    loteOtimizacao: control?.__lote ?? '',
+    tipoMatch: control ? 'MATCH CHAVE COMPOSTA' : '',
+    confianca: control ? 'Alta' : '',
+    observacao: reason,
+    motivo: reason,
+    statusAssociacao: status || optimizationStatus(quantity, hospital.__qtde, availableBefore),
+    hospitalRowId: hospital.__rowId,
+    controlRowId: control?.__rowId ?? '',
+  };
+}
+
+function optimizationStatus(optimizedQuantity, prescribedQuantity, availableBefore) {
+  if (optimizedQuantity <= 0) return 'Sem otimização';
+  if (optimizedQuantity >= prescribedQuantity && availableBefore > prescribedQuantity) return 'Verificar excesso';
+  if (optimizedQuantity >= prescribedQuantity) return 'Totalmente otimizado';
+  return 'Parcialmente otimizado';
+}
+
+function summarizeAssociations(associations) {
+  const summaries = new Map();
+  for (const association of associations) {
+    const current = summaries.get(association.hospitalRowId) ?? {
+      qtdeOtimizada: 0,
+      lotes: [],
+      status: 'Sem otimização',
+      availableBefore: association.qtdeDisponivelAntes ?? 0,
+    };
+    current.qtdeOtimizada += association.qtdeUsada ?? 0;
+    current.availableBefore = Math.max(current.availableBefore, association.qtdeDisponivelAntes ?? 0);
+    if (association.loteOtimizacao) current.lotes.push(association.loteOtimizacao);
+    current.status = optimizationStatus(current.qtdeOtimizada, association.qtdePrescrita, current.availableBefore);
+    summaries.set(association.hospitalRowId, current);
+  }
+  return summaries;
+}
+
+function appendUniqueText(current, value) {
+  const text = String(value ?? '').trim();
+  if (!text) return current ?? '';
+  const parts = String(current ?? '').split(';').map((part) => part.trim()).filter(Boolean);
+  if (!parts.includes(text)) parts.push(text);
+  return parts.join('; ');
 }
 
 function buildOutputWorkbook(hospitalRows, controlRows, associations, validations, originalHospitalSheet) {
@@ -345,24 +429,27 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
   })), controlColumns);
 
   addJsonSheet(workbook, REQUIRED_SHEETS[2], associations.map((item) => ({
+    'Linha Hospital': item.hospitalRowId,
+    'OS Hospital': item.osHospital,
     'OS Normalizada': item.osNormalizada,
-    CodBarra: item.codBarra,
+    'CodBarra Hospital': item.codBarraHospital,
+    'CodBarra Normalizado': item.codBarra,
+    'Medicamento Hospital': item.medicamentoHospital,
+    PrincipioAtivo: item.principioAtivo,
+    'Qtde Prescrita': item.qtdePrescrita,
+    'Linha Controle': item.controlRowId,
+    'Qtde usada da otimização': item.qtdeUsada,
+    'Lote da otimização': item.loteOtimizacao,
+    'Status da associação': item.statusAssociacao,
+    'Motivo quando não associar': item.motivo,
     'Chave OS+CodBarra': item.key,
     'Data Hospital': item.dataHospital,
     'Data Controle': item.dataControle,
-    'Medicamento Hospital': item.medicamentoHospital,
     'Medicamento Controle': item.medicamentoControle,
-    PrincipioAtivo: item.principioAtivo,
-    'Qtde Prescrita': item.qtdePrescrita,
-    'Qtde Otimizada': item.qtdeOtimizada,
-    'Lote Hospital': item.loteHospital,
-    'Lote Otimização': item.loteOtimizacao,
-    'Tipo de Match': item.tipoMatch,
-    'Confiança da Associação': item.confianca,
-    Observação: item.observacao,
+    'Qtde disponível antes': item.qtdeDisponivelAntes,
   })));
 
-  const associationByHospitalRow = new Map(associations.map((item) => [item.hospitalRowId, item]));
+  const associationByHospitalRow = summarizeAssociations(associations);
   const baixarRows = hospitalRows.filter((row) => !row.__isExcluded).map((row) => downloadRecord(row, associationByHospitalRow.get(row.__rowId)));
   addJsonSheet(workbook, REQUIRED_SHEETS[3], baixarRows);
   addJsonSheet(workbook, REQUIRED_SHEETS[4], baixarRows.map((row) => ({
@@ -384,7 +471,7 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
 }
 
 function downloadRecord(row, association) {
-  const optimizedQuantity = association?.qtdeOtimizada ?? 0;
+  const optimizedQuantity = Math.min(row.__qtde, association?.qtdeOtimizada ?? 0);
   return {
     Data: row.__data,
     Cliente: row.__cliente,
@@ -397,10 +484,10 @@ function downloadRecord(row, association) {
     'Chave OS+CodBarra': row.__key,
     'Qtde Prescrita': row.__qtde,
     'Qtde Otimizada': optimizedQuantity,
-    'Lote Otimização': association?.loteOtimizacao ?? 'Sem otimização',
+    'Lote Otimização': association?.lotes?.length ? unique(association.lotes).join('; ') : 'Sem otimização',
     'Qtde Baixa': row.__qtde - optimizedQuantity,
     'Lote da Baixa': row.__lote,
-    'Status Otimização': association ? 'Com otimização' : 'Sem otimização',
+    'Status Otimização': association?.status ?? 'Sem otimização',
   };
 }
 
@@ -530,7 +617,15 @@ function stripInternal(row) {
 }
 
 function normalizeOS(value) {
-  return onlyDigits(value).slice(0, 7);
+  return onlyDigits(removeExcelDecimal(value)).slice(0, 7);
+}
+
+function normalizeBarcode(value) {
+  return onlyDigits(removeExcelDecimal(value));
+}
+
+function removeExcelDecimal(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().replace(/\.0$/, '');
 }
 
 function onlyDigits(value) {
@@ -621,3 +716,13 @@ function setStatus(message, type) {
   statusElement.textContent = message;
   statusElement.className = `status ${type}`;
 }
+
+export {
+  associateRows,
+  buildKey,
+  normalizeBarcode,
+  normalizeOS,
+  optimizationStatus,
+  summarizeAssociations,
+  validation,
+};
