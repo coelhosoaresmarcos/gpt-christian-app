@@ -183,13 +183,13 @@ function readControlRows(sheet, validations) {
       __rowId: rowNumber,
       __data: getByCandidates(object, ['Data', 'Dt', 'Data Otimização', 'Data Otimizacao'], 3),
       __os: String(getByCandidates(object, ['Ordem de serviço', 'Ordem de Servico', 'OS', 'Ordem Serviço'], 2) ?? ''),
-      __unidadeOrigem: String(getByCandidates(object, ['Unidade Origem', 'Unidade de Origem', 'Origem'], 4) ?? ''),
-      __unidadeDestino: String(getByCandidates(object, ['Unidade de Destino', 'Unidade Destino', 'Destino'], 5) ?? ''),
+      __unidadeOrigem: String(getByExactHeaderOrPosition(object, ['Unidade de Origem', 'Unidade Origem'], 4) ?? ''),
+      __unidadeDestino: String(getByExactHeaderOrPosition(object, ['Unidade de Destino', 'Unidade Destino'], 5) ?? ''),
       __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente'], 6) ?? ''),
       __medicamento: String(getByCandidates(object, ['Medicamento', 'Produto'], 7) ?? ''),
       __qtde: toNumber(getByCandidates(object, ['Quantidade (mg)', 'Quantidade', 'Qtde', 'Qtd'], 8)),
       __lote: String(getByCandidates(object, ['Lote'], 9) ?? ''),
-      __validade: getByCandidates(object, ['Validade', 'Vencimento'], 10),
+      __validade: getByExactHeaderOrPosition(object, ['Validade'], 10),
       __laboratorio: String(getByCandidates(object, ['Laboratório', 'Laboratorio', 'Lab'], 11) ?? ''),
       __motivo: String(getByCandidates(object, ['Tipo/Motivo', 'Tipo', 'Motivo'], 1) ?? ''),
       __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'])),
@@ -530,13 +530,16 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
 
   copySheetValues(originalHospitalSheet, workbook.addWorksheet(REQUIRED_SHEETS[0]));
 
-  const controlColumns = Object.keys(stripInternal(controlRows[0] ?? {})).concat(['OS Normalizada', 'Medicamento Base', 'CodBarra Produto Hospital', 'Chave OS+CodBarra', 'OS Hospital Associada', 'Data Associação', 'Tipo de Match', 'Confiança da Associação', 'Status Associação', 'Observação']);
+  const controlColumns = Object.keys(stripInternal(controlRows[0] ?? {})).concat(['OS Normalizada', 'Medicamento Base', 'CodBarra Produto Hospital', 'Chave OS+CodBarra', 'Unidade de Origem capturada', 'Validade capturada', 'Lote Otimização com Validade', 'OS Hospital Associada', 'Data Associação', 'Tipo de Match', 'Confiança da Associação', 'Status Associação', 'Observação']);
   addJsonSheet(workbook, REQUIRED_SHEETS[1], controlRows.map((row) => ({
     ...stripInternal(row),
     'OS Normalizada': row.__osNormalizada,
     'Medicamento Base': row.__medicamentoBase,
     'CodBarra Produto Hospital': row.__codBarraProdutoHospital,
     'Chave OS+CodBarra': row.__key,
+    'Unidade de Origem capturada': row.__unidadeOrigem,
+    'Validade capturada': row.__validade,
+    'Lote Otimização com Validade': formatLotWithValidity(row.__lote, row.__validade),
     'OS Hospital Associada': row.__hospitalAssociado,
     'Data Associação': row.__dataAssociacao,
     'Tipo de Match': row.__tipoMatch,
@@ -673,6 +676,17 @@ function getByCandidates(object, candidates, fallbackIndex) {
     if (direct) return direct[1];
     const partial = entries.find(([key]) => normalizeText(key).includes(normalizeText(candidate)) || normalizeText(candidate).includes(normalizeText(key)));
     if (partial) return partial[1];
+  }
+  if (fallbackIndex) return entries[fallbackIndex - 1]?.[1] ?? null;
+  return null;
+}
+
+
+function getByExactHeaderOrPosition(object, candidates, fallbackIndex) {
+  const entries = Object.entries(object);
+  for (const candidate of candidates) {
+    const direct = entries.find(([key]) => normalizeText(key) === normalizeText(candidate));
+    if (direct) return direct[1];
   }
   if (fallbackIndex) return entries[fallbackIndex - 1]?.[1] ?? null;
   return null;
@@ -877,6 +891,7 @@ function setStatus(message, type) {
 export {
   associateRows,
   buildKey,
+  downloadRecord,
   normalizeBarcode,
   normalizeMedicineBase,
   normalizeMedicineProduct,

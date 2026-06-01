@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { associateRows, formatLotWithValidity, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, summarizeAssociations } from './src/app.js';
+import { associateRows, downloadRecord, formatLotWithValidity, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, summarizeAssociations } from './src/app.js';
 
 function fakeRow(values) {
   return {
@@ -93,6 +93,14 @@ assert.equal(fallbackControlRows[0].__unidadeOrigem, 'CENTRO MEDICO PITANGUEIRAS
 assert.equal(fallbackControlRows[0].__validade, '30/04/2027', 'readControlRows lê Validade pela posição 10');
 assert.equal(formatLotWithValidity(fallbackControlRows[0].__lote, fallbackControlRows[0].__validade), '25D0738 - Val.: 30/04/2027', 'lote e validade são combinados no formato do relatório');
 
+const positionalFallbackRows = readControlRows(fakeSheet([
+  ['Tipo/Motivo', 'OS', 'Data', 'Hospital Origem', 'Hospital Destino', 'Paciente', 'Medicamento', 'Quantidade', 'Lote', 'Data Venc.', 'Laboratório'],
+  ['OTIMIZAÇÃO', '13157787', '01/06/2026', 'CENTRO MEDICO PITANGUEIRAS', 'HOSPITAL SANTA HELENA', 'VLADEMIR PERNIQUELLI', 'FAULDFLUOR - 500 mg', 200, '25D0738', '30/04/2027', 'LIBBS'],
+]), []);
+assert.equal(positionalFallbackRows[0].__unidadeOrigem, 'CENTRO MEDICO PITANGUEIRAS', 'readControlRows usa a coluna D como fallback quando o cabeçalho de origem é diferente');
+assert.equal(positionalFallbackRows[0].__unidadeDestino, 'HOSPITAL SANTA HELENA', 'readControlRows usa a coluna E como fallback quando o cabeçalho de destino é diferente');
+assert.equal(positionalFallbackRows[0].__validade, '30/04/2027', 'readControlRows usa a coluna J como fallback quando o cabeçalho de validade é diferente');
+
 const validations = [];
 const hospitalRows = [
   hospital({ __rowId: 2, __os: '1234567-1', __codBarra: '7891000', __qtde: 5 }),
@@ -152,7 +160,15 @@ assert.deepEqual(mandatoryReportSummary.origens, ['CENTRO MEDICO PITANGUEIRAS'],
 assert.deepEqual(mandatoryReportSummary.lotes, ['25D0738'], 'RELATORIO/BAIXAR mantém o lote 25D0738 resumido para auditoria');
 assert.deepEqual(mandatoryReportSummary.lotesComValidade, ['25D0738 - Val.: 30/04/2027'], 'RELATORIO/BAIXAR usa lote e validade resumidos para a otimização');
 assert.equal(mandatoryReportSummary.status, 'Com otimização', 'RELATORIO/BAIXAR usa status Com otimização');
+const mandatoryDownloadRecord = downloadRecord(mandatoryHospitalRows[0], mandatoryReportSummary);
+assert.equal(mandatoryDownloadRecord['Origem da Otimização'], 'CENTRO MEDICO PITANGUEIRAS', 'RELATORIO mostra a origem da otimização vinda da coluna D');
+assert.equal(mandatoryDownloadRecord['Lote Otimização'], '25D0738 - Val.: 30/04/2027', 'RELATORIO mostra o lote da otimização com a validade da coluna J');
+assert.equal(mandatoryDownloadRecord['Status Otimização'], 'Com otimização', 'RELATORIO mostra status Com otimização quando houve consumo');
 assert.equal(mandatoryHospitalRows[0].__qtde - mandatoryAssociation.qtdeOtimizada, 100, 'Qtde Baixa esperada é 300 - 200 = 100');
+const noOptimizationRecord = downloadRecord(hospital({ __rowId: 8, __os: '7654321', __codBarra: '7896000', __qtde: 10 }), undefined);
+assert.equal(noOptimizationRecord['Origem da Otimização'], 'Sem otimização', 'RELATORIO mantém origem Sem otimização sem associação');
+assert.equal(noOptimizationRecord['Lote Otimização'], 'Sem otimização', 'RELATORIO mantém lote Sem otimização sem associação');
+assert.equal(noOptimizationRecord['Status Otimização'], 'Sem otimização', 'RELATORIO mantém status Sem otimização sem associação');
 assert.ok(mandatoryValidations.some((item) => item.Tipo === 'Divergência de lote como alerta não bloqueante'), 'lote diferente gera alerta não bloqueante');
 
 console.log('association optimization tests passed');
