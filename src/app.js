@@ -7,6 +7,10 @@ const REQUIRED_SHEETS = [
   'VALIDACAO',
 ];
 
+const MEDICINE_EQUIVALENCE_GROUPS = [
+  ['GENLIBBS', 'GENCITABINA', 'GEMCITABINA', 'GEMCITABINE'],
+];
+
 const EXCLUDED_ITEMS = [
   'INFUSOR - 100 ML - 2 ML/H',
   'INFUSOR - 200ML - 4ML/H',
@@ -142,21 +146,28 @@ function readHospitalRows(sheet, validations) {
     const object = rowToObject(row, headers);
     if (isEmptyObject(object)) return;
 
+    const physical = (index) => getPhysicalCell(row, index);
+    const columnI = physical(9);
+    const columnO = physical(15);
+    const rawMedicine = getByExactHeader(object, ['Medicamento Hospital', 'Medicamento', 'Produto', 'Descrição', 'Descricao']) ?? columnI;
+    const medication = shouldUseHospitalMedicineFallback(rawMedicine) ? columnI : rawMedicine;
+    const alternativeMedication = columnO || getByExactHeader(object, ['Medicamento Alternativo', 'Nome Comercial', 'Comercial']);
+
     const hospitalRow = {
       ...object,
       __rowId: rowNumber,
-      __data: getByCandidates(object, ['Data', 'Dt Atendimento', 'Data Atendimento'], 2),
-      __cliente: String(getByCandidates(object, ['Cliente', 'Unidade', 'Hospital'], 3) ?? ''),
-      __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente'], 4) ?? ''),
-      __medicamento: String(getByExactHeaderOrPosition(object, ['Medicamento Hospital', 'Medicamento', 'Descrição', 'Descricao'], 9) ?? ''),
-      __produtoHospital: String(getByExactHeaderOrPosition(object, ['Produto Hospital', 'Produto']) ?? ''),
-      __medicamentoColunaI: String(getByPosition(object, 9) ?? ''),
-      __medicamentoAlternativo: String(getByExactHeaderOrPosition(object, ['Medicamento Alternativo', 'Nome Comercial', 'Comercial'], 15) ?? ''),
-      __principioAtivo: String(getByExactHeaderOrPosition(object, ['PrincipioAtivo', 'Princípio Ativo', 'Principio Ativo'], 16) ?? ''),
-      __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'], 22)),
-      __qtde: toNumber(getByCandidates(object, ['Qtde', 'Quantidade', 'Qtd'], 11)),
-      __lote: String(getByCandidates(object, ['Lote'], 19) ?? ''),
-      __os: String(getByCandidates(object, ['OS', 'Ordem de serviço', 'Ordem de Servico', 'Ordem Serviço'], 8) ?? ''),
+      __data: getByCandidates(object, ['Data', 'Dt Atendimento', 'Data Atendimento']) ?? physical(3),
+      __cliente: String(getByCandidates(object, ['Cliente', 'Hospital']) ?? physical(1) ?? ''),
+      __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente']) ?? physical(4) ?? ''),
+      __os: String(getByCandidates(object, ['OS', 'Ordem de serviço', 'Ordem de Servico', 'Ordem Serviço']) ?? physical(8) ?? ''),
+      __medicamento: String(medication ?? ''),
+      __produtoHospital: String(getByExactHeader(object, ['Produto Hospital', 'Produto']) ?? ''),
+      __medicamentoColunaI: String(columnI ?? ''),
+      __medicamentoAlternativo: String(alternativeMedication ?? ''),
+      __principioAtivo: String(getByExactHeader(object, ['PrincipioAtivo', 'Princípio Ativo', 'Principio Ativo']) ?? physical(16) ?? ''),
+      __qtde: toNumber(getByCandidates(object, ['Qtde', 'Quantidade', 'Qtd']) ?? physical(11)),
+      __lote: String(getByCandidates(object, ['Lote']) ?? physical(19) ?? ''),
+      __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN']) ?? physical(22)),
     };
 
     hospitalRow.__osNormalizada = normalizeOS(hospitalRow.__os);
@@ -280,6 +291,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
       continue;
     }
     if (!sameOS.length) {
+      setValidationCandidateContext(control, sameOS, 'OS não encontrada no hospital');
       markOptimizationNotUsed(control, validations, validationDetails(control, 'OS não encontrada no hospital'));
       validations.push(validation('Divergência de OS', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Nenhuma OS normalizada correspondente na HOSPITAL_ORIGINAL.'));
       continue;
@@ -287,6 +299,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
 
     const dateCompatibleRows = sameOS.filter((hospital) => sameDayAndMonth(control.__data, hospital.__data));
     if (!dateCompatibleRows.length) {
+      setValidationCandidateContext(control, sameOS, 'data sem coincidência de dia e mês com o hospital');
       markOptimizationNotUsed(control, validations, validationDetails(control, 'data sem coincidência de dia e mês com o hospital'));
       validations.push(validation('Otimização sem correspondência segura', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'OS encontrada, mas a data do controle não coincide com dia/mês da data do hospital.'));
       continue;
@@ -294,6 +307,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
 
     const compatible = dateCompatibleRows.filter((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
     if (!compatible.length) {
+      setValidationCandidateContext(control, dateCompatibleRows, 'OS encontrada, mas medicamento diferente');
       refuseControl(control, validations, 'Tentativa de associação apenas por OS', 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.');
       validations.push(validation('Divergência de medicamento', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.'));
       continue;
@@ -301,10 +315,12 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
 
     const possibleBarcodes = unique(compatible.map((hospital) => hospital.__codBarra).filter(Boolean));
     if (!possibleBarcodes.length) {
+      setValidationCandidateContext(control, compatible, 'medicamento compatível sem CodBarra candidato');
       refuseControl(control, validations, 'Ausência de CodBarra compatível', 'Medicamento compatível encontrado na OS, mas sem CodBarra preenchido no hospital para criar a chave final.');
       continue;
     }
     if (possibleBarcodes.length > 1) {
+      setValidationCandidateContext(control, compatible, 'múltiplos CodBarra candidatos');
       refuseControl(control, validations, 'Múltiplos CodBarra possíveis na mesma OS', 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.');
       validations.push(validation('Múltiplos CodBarra possíveis na mesma OS', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.'));
       continue;
@@ -312,6 +328,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
 
     const identifiedBarcode = possibleBarcodes[0];
     if (control.__codBarra && control.__codBarra !== identifiedBarcode) {
+      setValidationCandidateContext(control, compatible, 'CodBarra do controle diverge do CodBarra candidato');
       refuseControl(control, validations, 'Divergência de CodBarra', 'CodBarra do controle diverge do CodBarra compatível identificado no hospital.');
       continue;
     }
@@ -415,6 +432,16 @@ function markOptimizationNotUsed(control, validations, message) {
   control.__observacao = message;
   control.__remaining = 0;
   validations.push(validation('Otimização sem correspondência segura', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, message));
+}
+
+function setValidationCandidateContext(control, candidates, exactReason) {
+  const candidate = candidates.find((hospital) => hospital.__osNormalizada === control.__osNormalizada) ?? candidates[0] ?? null;
+  control.__validationFoundOS = candidates.some((hospital) => hospital.__osNormalizada === control.__osNormalizada) ? 'SIM' : 'NÃO';
+  control.__validationMedicamentoHospitalCandidato = candidate?.__medicamentoColunaI || candidate?.__medicamento || '';
+  control.__validationMedicamentoAlternativoCandidato = candidate?.__medicamentoAlternativo || '';
+  control.__validationPrincipioAtivoCandidato = candidate?.__principioAtivo || '';
+  control.__validationCodBarraCandidato = candidate?.__codBarra || '';
+  control.__validationMotivoRecusa = exactReason;
 }
 
 function destinationSeemsCompatible(destination, hospitalName) {
@@ -686,6 +713,24 @@ function getByPosition(object, position) {
   return Object.entries(object)[position - 1]?.[1] ?? null;
 }
 
+function getPhysicalCell(row, position) {
+  return normalizeCell(row.getCell(position).value);
+}
+
+function getByExactHeader(object, candidates) {
+  const entries = Object.entries(object);
+  for (const candidate of candidates) {
+    const direct = entries.find(([key]) => normalizeText(key) === normalizeText(candidate));
+    if (direct) return direct[1];
+  }
+  return null;
+}
+
+function shouldUseHospitalMedicineFallback(value) {
+  const normalized = normalizeMedicineNameForComparison(value);
+  return !normalized || normalized === 'MG';
+}
+
 function getByCandidates(object, candidates, fallbackIndex) {
   const entries = Object.entries(object);
   for (const candidate of candidates) {
@@ -769,11 +814,20 @@ function validation(type, severity, sheet, line, row, message) {
     Linha: line,
     'OS controle': row.__os ?? '',
     OS_Normalizada: row.__osNormalizada,
+    'OS normalizada controle': row.__osNormalizada ?? '',
     CodBarra: row.__codBarra,
     'Medicamento controle': row.__medicamento ?? '',
+    'Medicamento Base controle': row.__medicamentoBase ?? '',
+    'Data controle': row.__data ?? '',
     Lote: row.__lote ?? '',
     Quantidade: row.__available ?? row.__qtde ?? '',
     'Unidade destino': row.__unidadeDestino ?? '',
+    'Encontrou OS no hospital': row.__validationFoundOS ?? '',
+    'Medicamento Hospital candidato coluna I': row.__validationMedicamentoHospitalCandidato ?? '',
+    'Medicamento Alternativo candidato coluna O': row.__validationMedicamentoAlternativoCandidato ?? '',
+    'PrincipioAtivo candidato coluna P': row.__validationPrincipioAtivoCandidato ?? '',
+    'CodBarra candidato coluna V': row.__validationCodBarraCandidato ?? '',
+    'Motivo exato da recusa': row.__validationMotivoRecusa ?? message,
     'Quantidade disponível': row.__remaining ?? row.__available ?? row.__qtde ?? '',
     Mensagem: message,
   };
@@ -847,7 +901,15 @@ function normalizeMedicineNameForComparison(value) {
 function compatibleNormalizedMedicine(control, candidate) {
   if (!control || !candidate) return false;
   if (control === candidate) return true;
+  if (equivalentMedicine(control, candidate)) return true;
   return candidate.includes(control) || control.includes(candidate);
+}
+
+function equivalentMedicine(control, candidate) {
+  return MEDICINE_EQUIVALENCE_GROUPS.some((group) => {
+    const normalizedGroup = group.map(normalizeMedicineNameForComparison);
+    return normalizedGroup.includes(control) && normalizedGroup.includes(candidate);
+  });
 }
 
 function isExcludedItem(medicine) {
