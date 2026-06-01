@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { associateRows, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, summarizeAssociations } from './src/app.js';
+import { associateRows, formatLotWithValidity, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, summarizeAssociations } from './src/app.js';
 
 function fakeRow(values) {
   return {
@@ -59,7 +59,9 @@ function control(overrides) {
     __qtde: overrides.__qtde,
     __lote: overrides.__lote ?? '25D0738',
     __motivo: overrides.__motivo ?? 'OTIMIZAÇÃO',
+    __unidadeOrigem: overrides.__unidadeOrigem ?? 'Centro Médico Origem',
     __unidadeDestino: overrides.__unidadeDestino ?? 'Hospital Teste',
+    __validade: overrides.__validade ?? '30/04/2027',
     __codBarra: codBarra,
     __codBarraProdutoHospital: '',
     __key: '',
@@ -87,6 +89,9 @@ assert.equal(fallbackControlRows[0].__osNormalizada, '1315778', 'OS do controle 
 assert.equal(fallbackControlRows[0].__medicamento, 'FAULDFLUOR - 500 mg', 'readControlRows lê medicamento pela posição 7');
 assert.equal(fallbackControlRows[0].__qtde, 200, 'readControlRows lê quantidade pela posição 8');
 assert.equal(fallbackControlRows[0].__lote, '25D0738', 'readControlRows lê lote pela posição 9');
+assert.equal(fallbackControlRows[0].__unidadeOrigem, 'CENTRO MEDICO PITANGUEIRAS', 'readControlRows lê Unidade de Origem pela posição 4');
+assert.equal(fallbackControlRows[0].__validade, '30/04/2027', 'readControlRows lê Validade pela posição 10');
+assert.equal(formatLotWithValidity(fallbackControlRows[0].__lote, fallbackControlRows[0].__validade), '25D0738 - Val.: 30/04/2027', 'lote e validade são combinados no formato do relatório');
 
 const validations = [];
 const hospitalRows = [
@@ -124,7 +129,7 @@ const mandatoryHospitalRows = [
   hospital({ __rowId: 7, __os: '13157787', __codBarra: '7895000', __qtde: 300, __cliente: 'HOSPITAL SANTA HELENA', __paciente: 'VLADEMIR PERNIQUELLI', __medicamento: 'FAULDFLUOR 500MG', __principioAtivo: 'FAULDFLUOR', __lote: 'LOTE-HOSPITAL' }),
 ];
 const mandatoryControlRows = [
-  control({ __rowId: 6, __os: '13157787', __qtde: 200, __lote: '25D0738', __data: '01/06/2026', __unidadeDestino: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg' }),
+  control({ __rowId: 6, __os: '13157787', __qtde: 200, __lote: '25D0738', __validade: '30/04/2027', __data: '01/06/2026', __unidadeOrigem: 'CENTRO MEDICO PITANGUEIRAS', __unidadeDestino: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg' }),
 ];
 const mandatoryAssociations = associateRows(mandatoryHospitalRows, mandatoryControlRows, mandatoryValidations, 'Hospital Santa Helena');
 const mandatoryAssociation = mandatoryAssociations.find((item) => item.hospitalRowId === 7 && item.controlRowId === 6);
@@ -135,12 +140,17 @@ assert.equal(mandatoryControlRows[0].__codBarraProdutoHospital, '7895000', 'cont
 assert.equal(mandatoryControlRows[0].__key, '1315778|7895000', 'controle recebe chave OS_NORMALIZADA|CODBARRA');
 assert.equal(mandatoryAssociation.key, '1315778|7895000');
 assert.equal(mandatoryAssociation.qtdeOtimizada, 200, 'Qtde Otimizada vem da quantidade registrada na linha OTIMIZAÇÃO, limitada pela prescrição');
+assert.equal(mandatoryAssociation.origemOtimizacao, 'CENTRO MEDICO PITANGUEIRAS', 'Origem da Otimização vem da mesma linha OTIMIZAÇÃO do controle');
 assert.equal(mandatoryAssociation.loteOtimizacao, '25D0738', 'Lote Otimização vem exatamente da linha OTIMIZAÇÃO do controle');
+assert.equal(mandatoryAssociation.validadeOtimizacao, '30/04/2027', 'Validade Otimização vem da mesma linha OTIMIZAÇÃO do controle');
+assert.equal(mandatoryAssociation.loteOtimizacaoComValidade, '25D0738 - Val.: 30/04/2027', 'Lote Otimização com Validade combina lote e validade da mesma linha do controle');
 assert.equal(mandatoryAssociation.statusAssociacao, 'Com otimização');
 assert.equal(mandatoryAssociation.tipoMatch, 'MATCH MÉDIO');
 assert.equal(mandatoryAssociation.confianca, 'Média');
 const mandatoryReportSummary = summarizeAssociations(mandatoryAssociations).get(7);
-assert.deepEqual(mandatoryReportSummary.lotes, ['25D0738'], 'RELATORIO/BAIXAR usa o lote 25D0738 resumido para a otimização');
+assert.deepEqual(mandatoryReportSummary.origens, ['CENTRO MEDICO PITANGUEIRAS'], 'RELATORIO/BAIXAR usa a origem da otimização resumida');
+assert.deepEqual(mandatoryReportSummary.lotes, ['25D0738'], 'RELATORIO/BAIXAR mantém o lote 25D0738 resumido para auditoria');
+assert.deepEqual(mandatoryReportSummary.lotesComValidade, ['25D0738 - Val.: 30/04/2027'], 'RELATORIO/BAIXAR usa lote e validade resumidos para a otimização');
 assert.equal(mandatoryReportSummary.status, 'Com otimização', 'RELATORIO/BAIXAR usa status Com otimização');
 assert.equal(mandatoryHospitalRows[0].__qtde - mandatoryAssociation.qtdeOtimizada, 100, 'Qtde Baixa esperada é 300 - 200 = 100');
 assert.ok(mandatoryValidations.some((item) => item.Tipo === 'Divergência de lote como alerta não bloqueante'), 'lote diferente gera alerta não bloqueante');

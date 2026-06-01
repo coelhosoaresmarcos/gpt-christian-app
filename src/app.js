@@ -473,7 +473,10 @@ function associationRecord(hospital, control, quantity, status, reason, availabl
     qtdeOtimizada: quantity,
     qtdeDisponivelAntes: availableBefore,
     loteHospital: hospital.__lote,
+    origemOtimizacao: control?.__unidadeOrigem ?? '',
+    validadeOtimizacao: control?.__validade ?? '',
     loteOtimizacao: control?.__lote ?? '',
+    loteOtimizacaoComValidade: formatLotWithValidity(control?.__lote, control?.__validade),
     tipoMatch: control?.__tipoMatch ?? '',
     confianca: control?.__confianca ?? '',
     observacao: reason,
@@ -493,13 +496,19 @@ function summarizeAssociations(associations) {
   for (const association of associations) {
     const current = summaries.get(association.hospitalRowId) ?? {
       qtdeOtimizada: 0,
+      origens: [],
       lotes: [],
+      lotesComValidade: [],
+      validades: [],
       status: 'Sem otimização',
       availableBefore: association.qtdeDisponivelAntes ?? 0,
     };
     current.qtdeOtimizada += association.qtdeUsada ?? 0;
     current.availableBefore = Math.max(current.availableBefore, association.qtdeDisponivelAntes ?? 0);
+    if (association.origemOtimizacao) current.origens.push(association.origemOtimizacao);
     if (association.loteOtimizacao) current.lotes.push(association.loteOtimizacao);
+    if (association.loteOtimizacaoComValidade) current.lotesComValidade.push(association.loteOtimizacaoComValidade);
+    if (association.validadeOtimizacao) current.validades.push(formatDate(association.validadeOtimizacao));
     current.status = optimizationStatus(current.qtdeOtimizada, association.qtdePrescrita, current.availableBefore);
     summaries.set(association.hospitalRowId, current);
   }
@@ -548,11 +557,14 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
     'Qtde Prescrita': item.qtdePrescrita,
     'Qtde Otimizada': item.qtdeOtimizada,
     'Lote Hospital': item.loteHospital,
+    'Origem da Otimização': item.origemOtimizacao,
     'Lote Otimização': item.loteOtimizacao,
+    'Validade Otimização': item.validadeOtimizacao,
+    'Lote Otimização com Validade': item.loteOtimizacaoComValidade,
     'Tipo de Match': item.tipoMatch,
     'Confiança da Associação': item.confianca,
     Observação: item.observacao,
-  })), ['OS Normalizada', 'CodBarra', 'Chave OS+CodBarra', 'Data Hospital', 'Data Controle', 'Medicamento Hospital', 'Medicamento Controle', 'PrincipioAtivo', 'Qtde Prescrita', 'Qtde Otimizada', 'Lote Hospital', 'Lote Otimização', 'Tipo de Match', 'Confiança da Associação', 'Observação']);
+  })), ['OS Normalizada', 'CodBarra', 'Chave OS+CodBarra', 'Data Hospital', 'Data Controle', 'Medicamento Hospital', 'Medicamento Controle', 'PrincipioAtivo', 'Qtde Prescrita', 'Qtde Otimizada', 'Lote Hospital', 'Origem da Otimização', 'Lote Otimização', 'Validade Otimização', 'Lote Otimização com Validade', 'Tipo de Match', 'Confiança da Associação', 'Observação']);
 
   const associationByHospitalRow = summarizeAssociations(associations);
   const baixarRows = hospitalRows.filter((row) => !row.__isExcluded).map((row) => downloadRecord(row, associationByHospitalRow.get(row.__rowId)));
@@ -564,11 +576,12 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
     'Medicamento Hospital': row['Medicamento Hospital'],
     'Qtde Prescrita': row['Qtde Prescrita'],
     'Qtde Otimizada': row['Qtde Otimizada'],
+    'Origem da Otimização': row['Origem da Otimização'],
     'Lote Otimização': row['Lote Otimização'],
     'Qtde Baixa': row['Qtde Baixa'],
     'Lote da Baixa': row['Lote da Baixa'],
     'Status Otimização': row['Status Otimização'],
-  })));
+  })), ['Data', 'Cliente', 'Paciente', 'Medicamento Hospital', 'Qtde Prescrita', 'Qtde Otimizada', 'Origem da Otimização', 'Lote Otimização', 'Qtde Baixa', 'Lote da Baixa', 'Status Otimização']);
   addJsonSheet(workbook, REQUIRED_SHEETS[5], validations);
 
   workbook.worksheets.forEach(formatWorksheet);
@@ -588,11 +601,20 @@ function downloadRecord(row, association) {
     'Chave OS+CodBarra': row.__key,
     'Qtde Prescrita': row.__qtde,
     'Qtde Otimizada': optimizedQuantity,
-    'Lote Otimização': association?.lotes?.length ? unique(association.lotes).join('; ') : 'Sem otimização',
+    'Origem da Otimização': association?.origens?.length ? unique(association.origens).join('; ') : 'Sem otimização',
+    'Lote Otimização': association?.lotesComValidade?.length ? unique(association.lotesComValidade).join('; ') : 'Sem otimização',
     'Qtde Baixa': row.__qtde - optimizedQuantity,
     'Lote da Baixa': row.__lote,
     'Status Otimização': association?.status ?? 'Sem otimização',
   };
+}
+
+
+function formatLotWithValidity(lote, validade) {
+  const lotText = String(lote ?? '').trim();
+  if (!lotText) return '';
+  const validityText = String(formatDate(validade) ?? '').trim();
+  return validityText ? `${lotText} - Val.: ${validityText}` : lotText;
 }
 
 function refuseControl(control, validations, type, message) {
@@ -859,6 +881,7 @@ export {
   normalizeMedicineBase,
   normalizeMedicineProduct,
   normalizeOS,
+  formatLotWithValidity,
   optimizationStatus,
   readControlRows,
   summarizeAssociations,
