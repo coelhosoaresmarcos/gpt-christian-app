@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { associateRows, downloadRecord, formatLotWithValidity, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, summarizeAssociations } from './src/app.js';
+import { associateRows, downloadRecord, formatLotWithValidity, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
 
 function fakeRow(values) {
   return {
@@ -34,6 +34,9 @@ function hospital(overrides) {
     __cliente: overrides.__cliente ?? 'Hospital Teste',
     __paciente: overrides.__paciente ?? 'Paciente',
     __medicamento: overrides.__medicamento ?? 'FAULDFLUOR 500MG',
+    __produtoHospital: overrides.__produtoHospital ?? '',
+    __medicamentoColunaI: overrides.__medicamentoColunaI ?? overrides.__medicamento ?? 'FAULDFLUOR 500MG',
+    __medicamentoAlternativo: overrides.__medicamentoAlternativo ?? '',
     __principioAtivo: overrides.__principioAtivo ?? 'FAULDFLUOR 500MG',
     __codBarra: codBarra,
     __qtde: overrides.__qtde,
@@ -93,6 +96,20 @@ assert.equal(fallbackControlRows[0].__unidadeOrigem, 'CENTRO MEDICO PITANGUEIRAS
 assert.equal(fallbackControlRows[0].__unidadeDestino, 'HOSPITAL SANTA HELENA', 'readControlRows lê Unidade de Destino pela posição 5');
 assert.equal(fallbackControlRows[0].__validade, '30/04/2027', 'readControlRows lê Validade pela posição 10');
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__unidadeOrigem').length, 1, 'controlRow contém __unidadeOrigem apenas uma vez');
+
+
+const fallbackHospitalRows = readHospitalRows(fakeSheet([
+  ['Coluna A', 'Coluna B', 'Data', 'Paciente', 'Tipo', 'Documento', 'Unidade', 'OS', 'Coluna I', 'UM', 'Qtde', 'Desc 1', 'Desc 2', 'Setor', 'Coluna O', 'PrincipioAtivo', 'Carteira', 'Convenio', 'Lote', 'Extra 1', 'Extra 2', 'CodBarra'],
+  ['HOSPITAL ANA COSTA', 'HOSPITAL ANA COSTA S/A', '01/06/2026', 'ODETE DE SOUSA', 'NFe', '1122056', 'QT', '1.315.669,00', 'GENLIBBS', 'mg', '1.300,00', '0,00', '0,00', 'AMBULATORIO', 'GENLIBBS', 'GENCITABINA', 'Corporativo', 'AMIL', 'L:26A0739 V:31/01/28; L:26A0728 V:31/01/28', '', '1082', '7896094207257'],
+]), []);
+assert.equal(fallbackHospitalRows[0].__os, '1.315.669,00', 'readHospitalRows lê OS pela coluna H quando cabeçalho de OS existe ou por fallback');
+assert.equal(fallbackHospitalRows[0].__medicamento, 'GENLIBBS', 'readHospitalRows usa a coluna I como fallback de Medicamento Hospital');
+assert.equal(fallbackHospitalRows[0].__medicamentoColunaI, 'GENLIBBS', 'readHospitalRows mantém campo interno da coluna I');
+assert.equal(fallbackHospitalRows[0].__medicamentoAlternativo, 'GENLIBBS', 'readHospitalRows usa a coluna O como Medicamento Alternativo');
+assert.equal(fallbackHospitalRows[0].__principioAtivo, 'GENCITABINA', 'readHospitalRows usa a coluna P como PrincipioAtivo');
+assert.equal(fallbackHospitalRows[0].__codBarra, '7896094207257', 'readHospitalRows usa a coluna V como CodBarra');
+assert.equal(fallbackHospitalRows[0].__qtde, 1300, 'readHospitalRows usa a coluna K como Qtde');
+assert.equal(fallbackHospitalRows[0].__lote, 'L:26A0739 V:31/01/28; L:26A0728 V:31/01/28', 'readHospitalRows usa a coluna S como Lote');
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__unidadeDestino').length, 1, 'controlRow contém __unidadeDestino apenas uma vez');
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__validade').length, 1, 'controlRow contém __validade apenas uma vez');
 assert.equal(Object.keys(fallbackControlRows[0]).filter((key) => key === '__lote').length, 1, 'controlRow contém __lote apenas uma vez');
@@ -172,6 +189,42 @@ assert.equal(mandatoryDownloadRecord['Origem da Otimização'], 'CENTRO MEDICO P
 assert.equal(mandatoryDownloadRecord['Lote Otimização'], '25D0738 - Val.: 30/04/2027', 'RELATORIO mostra o lote da otimização com a validade da coluna J');
 assert.equal(mandatoryDownloadRecord['Status Otimização'], 'Com otimização', 'RELATORIO mostra status Com otimização quando houve consumo');
 assert.equal(mandatoryHospitalRows[0].__qtde - mandatoryAssociation.qtdeOtimizada, 100, 'Qtde Baixa esperada é 300 - 200 = 100');
+const genlibbsValidations = [];
+const genlibbsHospitalRows = [
+  hospital({ __rowId: 9, __os: '1.315.669,00', __codBarra: '7896094207257', __qtde: 1300, __cliente: 'HOSPITAL ANA COSTA', __paciente: 'ODETE DE SOUSA', __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA', __lote: 'L:26A0739 V:31/01/28; L:26A0728 V:31/01/28' }),
+];
+const genlibbsControlRows = [
+  control({ __rowId: 10, __os: '1.315.669,00', __qtde: 100, __lote: '26A0739', __validade: '31/01/2028', __data: '01/06/2026', __unidadeOrigem: 'AMBULATORIO', __unidadeDestino: 'HOSPITAL ANA COSTA', __medicamento: 'GENLIBBS - qualquer concentração' }),
+];
+const genlibbsAssociations = associateRows(genlibbsHospitalRows, genlibbsControlRows, genlibbsValidations, 'Hospital Ana Costa');
+assert.equal(genlibbsControlRows[0].__medicamentoBase, 'GENLIBBS', 'controle GENLIBBS cria Medicamento Base apenas com texto antes do hífen');
+assert.equal(genlibbsControlRows[0].__codBarraProdutoHospital, '7896094207257', 'controle GENLIBBS localiza CodBarra Produto Hospital por coluna I/O');
+assert.equal(genlibbsControlRows[0].__key, '1315669|7896094207257', 'controle GENLIBBS cria chave final OS_NORMALIZADA|CodBarra');
+assert.ok(genlibbsAssociations.find((item) => item.hospitalRowId === 9 && item.controlRowId === 10), 'controle GENLIBBS associa somente após criar chave OS+CodBarra');
+assert.equal(genlibbsAssociations[0].statusAssociacao, 'Com otimização', 'controle GENLIBBS gera status Com otimização');
+
+const mismatchValidations = [];
+associateRows(
+  [hospital({ __rowId: 11, __os: '1234567', __codBarra: '7897000', __qtde: 10, __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' })],
+  [control({ __rowId: 12, __os: '1234567', __qtde: 1, __medicamento: 'KEYTRUDA - 100MG' })],
+  mismatchValidations,
+  'Hospital Teste',
+);
+assert.ok(mismatchValidations.some((item) => item.Mensagem === 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.'), 'registra mensagem específica quando OS existe mas Medicamento Base não corresponde');
+
+const multiBarcodeValidations = [];
+associateRows(
+  [
+    hospital({ __rowId: 13, __os: '7654321', __codBarra: '7898000', __qtde: 10, __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+    hospital({ __rowId: 14, __os: '7654321', __codBarra: '7898001', __qtde: 10, __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+  ],
+  [control({ __rowId: 15, __os: '7654321', __qtde: 1, __medicamento: 'GENLIBBS - 1000 mg' })],
+  multiBarcodeValidations,
+  'Hospital Teste',
+);
+assert.ok(multiBarcodeValidations.some((item) => item.Mensagem === 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.'), 'bloqueia associação automática com múltiplos CodBarra para mesma OS e Medicamento Base');
+
+
 const noOptimizationRecord = downloadRecord(hospital({ __rowId: 8, __os: '7654321', __codBarra: '7896000', __qtde: 10 }), undefined);
 assert.equal(noOptimizationRecord['Origem da Otimização'], 'Sem otimização', 'RELATORIO mantém origem Sem otimização sem associação');
 assert.equal(noOptimizationRecord['Lote Otimização'], 'Sem otimização', 'RELATORIO mantém lote Sem otimização sem associação');
