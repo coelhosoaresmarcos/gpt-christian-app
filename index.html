@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Christian — Consolidador de Baixas</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="badge">🛡️ Fluxo Christian</div>
+        <h1>Consolidador de baixas e otimizações</h1>
+        <p>
+          App web para transformar o fluxo do GPT Christian em um processo operacional:
+          recebe as planilhas, preserva os dados originais, associa otimizações por
+          <strong>OS normalizada + CodBarra</strong>, gera validações e entrega um Excel consolidado.
+        </p>
+      </section>
+
+      <section class="grid">
+        <div class="card main-card">
+          <h2>1. Envie os arquivos</h2>
+          <div class="upload-grid">
+            <label class="dropzone">
+              <span class="icon">☁️</span>
+              <strong>Arquivo do hospital</strong>
+              <span>Base principal da baixa; será preservada em HOSPITAL_ORIGINAL.</span>
+              <input id="hospitalFile" type="file" accept=".xlsx,.xls" />
+              <em id="hospitalFileName">📄 Selecionar Excel</em>
+            </label>
+            <label class="dropzone">
+              <span class="icon">☁️</span>
+              <strong>SOBRAS ALTO CUSTO REDE AMÉRICAS</strong>
+              <span>Será lida somente a aba CONTROLE DE MEDICAMENTOS.</span>
+              <input id="controlFile" type="file" accept=".xlsx,.xls" />
+              <em id="controlFileName">📄 Selecionar Excel</em>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Nome do hospital para filtrar Unidade de Destino</span>
+            <input id="hospitalName" placeholder="Ex.: Hospital São Lucas" />
+            <small>Se ficar em branco, o app não bloqueará por Unidade de Destino e registrará alerta.</small>
+          </label>
+
+          <button id="processButton" class="primary">Gerar Excel consolidado</button>
+          <p id="status" class="status" role="status"></p>
+        </div>
+
+        <aside class="card">
+          <h2>2. Estrutura proposta</h2>
+          <ol class="steps">
+            <li><strong>Frontend estático:</strong> HTML, CSS e JavaScript puro.</li>
+            <li><strong>Processador Christian:</strong> regra de leitura, associação, baixa e validação no navegador.</li>
+            <li><strong>ExcelJS via CDN:</strong> leitura e geração de .xlsx com abas formatadas.</li>
+            <li><strong>Download local:</strong> nenhum arquivo é enviado para servidor nesta primeira versão.</li>
+          </ol>
+        </aside>
+
+        <aside class="card">
+          <h2>3. Regras contempladas</h2>
+          <ul class="checklist">
+            <li>CONTROLE DE MEDICAMENTOS mantém todos os registros originais.</li>
+            <li>OS normalizada usa os 7 primeiros dígitos numéricos.</li>
+            <li>Associação segura usa OS + CodBarra; lote não bloqueia.</li>
+            <li>Itens excluídos saem de BAIXAR/RELATORIO e entram em VALIDACAO.</li>
+            <li>RELATORIO mostra todos os itens baixáveis, com ou sem otimização.</li>
+            <li>Excel final sempre contém as 6 abas obrigatórias.</li>
+          </ul>
+        </aside>
+
+        <div id="resultCard" class="card result-card hidden">
+          <div>
+            <h2>4. Resultado pronto</h2>
+            <p id="summary"></p>
+          </div>
+          <button id="downloadButton" class="download">⬇️ Baixar Excel consolidado</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>
