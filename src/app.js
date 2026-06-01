@@ -181,13 +181,17 @@ function readControlRows(sheet, validations) {
     const controlRow = {
       ...object,
       __rowId: rowNumber,
-      __data: getByCandidates(object, ['Data', 'Dt', 'Data Otimização', 'Data Otimizacao']),
-      __os: String(getByCandidates(object, ['Ordem de serviço', 'Ordem de Servico', 'OS', 'Ordem Serviço']) ?? ''),
-      __medicamento: String(getByCandidates(object, ['Medicamento', 'Produto']) ?? ''),
-      __qtde: toNumber(getByCandidates(object, ['Quantidade (mg)', 'Quantidade', 'Qtde', 'Qtd'])),
-      __lote: String(getByCandidates(object, ['Lote']) ?? ''),
-      __motivo: String(getByCandidates(object, ['Tipo/Motivo', 'Tipo', 'Motivo']) ?? ''),
-      __unidadeDestino: String(getByCandidates(object, ['Unidade de Destino', 'Unidade Destino', 'Destino']) ?? ''),
+      __data: getByCandidates(object, ['Data', 'Dt', 'Data Otimização', 'Data Otimizacao'], 3),
+      __os: String(getByCandidates(object, ['Ordem de serviço', 'Ordem de Servico', 'OS', 'Ordem Serviço'], 2) ?? ''),
+      __unidadeOrigem: String(getByCandidates(object, ['Unidade Origem', 'Unidade de Origem', 'Origem'], 4) ?? ''),
+      __unidadeDestino: String(getByCandidates(object, ['Unidade de Destino', 'Unidade Destino', 'Destino'], 5) ?? ''),
+      __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente'], 6) ?? ''),
+      __medicamento: String(getByCandidates(object, ['Medicamento', 'Produto'], 7) ?? ''),
+      __qtde: toNumber(getByCandidates(object, ['Quantidade (mg)', 'Quantidade', 'Qtde', 'Qtd'], 8)),
+      __lote: String(getByCandidates(object, ['Lote'], 9) ?? ''),
+      __validade: getByCandidates(object, ['Validade', 'Vencimento'], 10),
+      __laboratorio: String(getByCandidates(object, ['Laboratório', 'Laboratorio', 'Lab'], 11) ?? ''),
+      __motivo: String(getByCandidates(object, ['Tipo/Motivo', 'Tipo', 'Motivo'], 1) ?? ''),
       __codBarra: normalizeBarcode(getByCandidates(object, ['CodBarra', 'Código de Barras', 'Codigo de Barras', 'EAN'])),
       __status: 'Não avaliado como otimização',
       __observacao: 'Linha mantida no controle original; motivo/unidade/data serão avaliados no processamento.',
@@ -251,15 +255,19 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
       validations.push(validation('Unidade de Destino divergente', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Unidade de Destino não parece compatível com o hospital informado; a associação NÃO foi bloqueada e continuará por OS + medicamento/CodBarra.'));
     }
     if (!control.__osNormalizada) {
-      control.__status = 'Associação recusada';
-      control.__observacao = 'OS Normalizada é obrigatória para otimização.';
-      control.__remaining = 0;
+      markOptimizationNotUsed(control, validations, 'OS controle: (vazia); Medicamento controle: ' + (control.__medicamento || '(vazio)') + '; Quantidade: ' + control.__available + '; Lote: ' + (control.__lote || '(vazio)') + '; Motivo de não uso: OS não encontrada no hospital.');
+      continue;
+    }
+    if (!Number.isFinite(control.__available) || control.__available <= 0) {
+      markOptimizationNotUsed(control, validations, validationDetails(control, 'quantidade inválida'));
+      continue;
+    }
+    if (!String(control.__lote ?? '').trim()) {
+      markOptimizationNotUsed(control, validations, validationDetails(control, 'lote vazio'));
       continue;
     }
     if (!control.__codBarra && !control.__medicamentoNormalizado) {
-      control.__status = 'Associação recusada';
-      control.__observacao = 'Quando o controle não tem CodBarra, o medicamento normalizado é obrigatório para associar por OS + Medicamento.';
-      control.__remaining = 0;
+      markOptimizationNotUsed(control, validations, validationDetails(control, 'OS encontrada, mas medicamento diferente'));
       continue;
     }
     control.__status = 'Disponível para otimização';
@@ -355,6 +363,14 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
 }
 
 
+
+function markOptimizationNotUsed(control, validations, message) {
+  control.__status = 'Não utilizado';
+  control.__observacao = message;
+  control.__remaining = 0;
+  validations.push(validation('Otimização não utilizada', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, message));
+}
+
 function destinationSeemsCompatible(destination, hospitalName) {
   const hospital = normalizeText(hospitalName);
   if (!hospital) return true;
@@ -388,19 +404,16 @@ function unusedOptimizationReason(control, hospitalRows) {
   }
   const compatibleMedicine = sameOS.filter((hospital) => medicineCompatible(control.__medicamentoNormalizado, hospital));
   if (!compatibleMedicine.length) {
-    return { ...base, message: validationDetails(control, 'OS encontrada, mas medicamento não compatível') };
+    return { ...base, message: validationDetails(control, 'OS encontrada, mas medicamento diferente') };
   }
   if (control.__remaining <= 0) {
-    return { ...base, message: validationDetails(control, 'medicamento compatível, mas sem saldo') };
+    return { ...base, message: validationDetails(control, 'já consumida por outra linha') };
   }
-  if (!destinationSeemsCompatible(control.__unidadeDestino, control.__hospitalAssociado)) {
-    return { ...base, message: validationDetails(control, 'bloqueio indevido por unidade de destino') };
-  }
-  return { ...base, message: validationDetails(control, 'medicamento compatível, mas sem saldo') };
+  return { ...base, message: validationDetails(control, 'já consumida por outra linha') };
 }
 
 function validationDetails(control, exactReason) {
-  return `OS controle: ${control.__os || '(vazia)'}; Medicamento controle: ${control.__medicamento || '(vazio)'}; Unidade destino: ${control.__unidadeDestino || '(vazia)'}; Quantidade disponível: ${control.__remaining ?? control.__available ?? 0}; Motivo exato: ${exactReason}.`;
+  return `OS controle: ${control.__os || '(vazia)'}; Medicamento controle: ${control.__medicamento || '(vazio)'}; Quantidade: ${control.__available ?? control.__qtde ?? 0}; Lote: ${control.__lote || '(vazio)'}; Motivo de não uso: ${exactReason}.`;
 }
 
 function controlCandidateMatchesHospital(control, hospital) {
@@ -696,6 +709,8 @@ function validation(type, severity, sheet, line, row, message) {
     OS_Normalizada: row.__osNormalizada,
     CodBarra: row.__codBarra,
     'Medicamento controle': row.__medicamento ?? '',
+    Lote: row.__lote ?? '',
+    Quantidade: row.__available ?? row.__qtde ?? '',
     'Unidade destino': row.__unidadeDestino ?? '',
     'Quantidade disponível': row.__remaining ?? row.__available ?? row.__qtde ?? '',
     Mensagem: message,
@@ -834,6 +849,7 @@ export {
   normalizeMedicineProduct,
   normalizeOS,
   optimizationStatus,
+  readControlRows,
   summarizeAssociations,
   validation,
 };
