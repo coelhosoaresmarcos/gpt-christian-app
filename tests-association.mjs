@@ -1,5 +1,30 @@
 import assert from 'node:assert/strict';
-import { associateRows, normalizeMedicineProduct, normalizeOS } from './src/app.js';
+import { associateRows, normalizeMedicineProduct, normalizeOS, readControlRows, summarizeAssociations } from './src/app.js';
+
+
+function fakeRow(values) {
+  return {
+    eachCell(_options, callback) {
+      values.forEach((value, index) => callback({ value }, index + 1));
+    },
+    getCell(index) {
+      return { value: values[index - 1] ?? null };
+    },
+  };
+}
+
+function fakeSheet(rows) {
+  const fakeRows = rows.map(fakeRow);
+  return {
+    eachRow(optionsOrCallback, maybeCallback) {
+      const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
+      fakeRows.forEach((row, index) => callback(row, index + 1));
+    },
+    getRow(index) {
+      return fakeRows[index - 1];
+    },
+  };
+}
 
 function hospital(overrides) {
   const row = {
@@ -48,6 +73,33 @@ function control(overrides) {
 }
 
 assert.equal(normalizeMedicineProduct('FAULDFLUOR - 500 mg'), 'FAULDFLUOR 500MG');
+
+const fallbackControlRows = readControlRows(fakeSheet([
+  ['Tipo/Motivo', 'OS', 'Data', 'Unidade Origem', 'Unidade Destino', 'Paciente', 'Medicamento', 'Quantidade', 'Lote', 'Validade', 'Laboratório'],
+  ['OTIMIZAÇÃO', '13157787', '01/06/2026', 'CENTRO MEDICO PITANGUEIRAS', 'HOSPITAL SANTA HELENA', 'VLADEMIR PERNIQUELLI', 'FAULDFLUOR - 500 mg', 200, '25D0738', '30/04/2027', 'LIBBS'],
+]), []);
+assert.equal(fallbackControlRows[0].__os, '13157787', 'readControlRows lê OS pela posição 2 quando necessário');
+assert.equal(fallbackControlRows[0].__osNormalizada, '13157787', 'OS lida no controle permanece com todos os dígitos');
+assert.equal(fallbackControlRows[0].__medicamento, 'FAULDFLUOR - 500 mg', 'readControlRows lê medicamento pela posição 7');
+assert.equal(fallbackControlRows[0].__qtde, 200, 'readControlRows lê quantidade pela posição 8');
+assert.equal(fallbackControlRows[0].__lote, '25D0738', 'readControlRows lê lote pela posição 9');
+
+const positionalFallbackControlRows = readControlRows(fakeSheet([
+  ['Motivo sem nome oficial', 'Identificador atendimento', 'Quando', 'Origem remessa', 'Destino remessa', 'Nome beneficiario', 'Item solicitado', 'Saldo remessa', 'Numero lote', 'Vence em', 'Fabricante'],
+  ['OTIMIZAÇÃO', '13157787', '01/06/2026', 'CENTRO MEDICO PITANGUEIRAS', 'HOSPITAL SANTA HELENA', 'VLADEMIR PERNIQUELLI', 'FAULDFLUOR - 500 mg', 200, '25D0738', '30/04/2027', 'LIBBS'],
+]), []);
+assert.equal(positionalFallbackControlRows[0].__motivo, 'OTIMIZAÇÃO', 'fallback por posição lê Tipo/Motivo na coluna 1');
+assert.equal(positionalFallbackControlRows[0].__os, '13157787', 'fallback por posição lê OS na coluna 2');
+assert.equal(positionalFallbackControlRows[0].__data, '01/06/2026', 'fallback por posição lê Data na coluna 3');
+assert.equal(positionalFallbackControlRows[0].__unidadeOrigem, 'CENTRO MEDICO PITANGUEIRAS', 'fallback por posição lê Unidade Origem na coluna 4');
+assert.equal(positionalFallbackControlRows[0].__unidadeDestino, 'HOSPITAL SANTA HELENA', 'fallback por posição lê Unidade Destino na coluna 5');
+assert.equal(positionalFallbackControlRows[0].__paciente, 'VLADEMIR PERNIQUELLI', 'fallback por posição lê Paciente na coluna 6');
+assert.equal(positionalFallbackControlRows[0].__medicamento, 'FAULDFLUOR - 500 mg', 'fallback por posição lê Medicamento na coluna 7');
+assert.equal(positionalFallbackControlRows[0].__qtde, 200, 'fallback por posição lê Quantidade na coluna 8');
+assert.equal(positionalFallbackControlRows[0].__lote, '25D0738', 'fallback por posição lê Lote na coluna 9');
+assert.equal(positionalFallbackControlRows[0].__validade, '30/04/2027', 'fallback por posição lê Validade na coluna 10');
+assert.equal(positionalFallbackControlRows[0].__laboratorio, 'LIBBS', 'fallback por posição lê Laboratório na coluna 11');
+
 assert.equal(normalizeOS('13157787.0'), '13157787', 'normalizeOS mantém todos os 8 dígitos da OS real e remove apenas o decimal do Excel');
 
 const validations = [];
@@ -103,6 +155,9 @@ assert.equal(mandatoryControlRows[0].__osNormalizada, '13157787', 'OS 13157787 d
 assert.equal(mandatoryAssociation.qtdeOtimizada, 200, 'Qtde Otimizada vem da quantidade registrada na linha OTIMIZAÇÃO, limitada pela prescrição');
 assert.equal(mandatoryAssociation.loteOtimizacao, '25D0738', 'Lote Otimização vem exatamente da linha OTIMIZAÇÃO do controle');
 assert.equal(mandatoryAssociation.statusAssociacao, 'Parcialmente otimizado');
+const mandatoryReportSummary = summarizeAssociations(mandatoryAssociations).get(7);
+assert.deepEqual(mandatoryReportSummary.lotes, ['25D0738'], 'RELATORIO/BAIXAR usa o lote 25D0738 resumido para a otimização');
+assert.equal(mandatoryReportSummary.status, 'Parcialmente otimizado', 'RELATORIO/BAIXAR mantém status Parcialmente otimizado');
 assert.equal(mandatoryHospitalRows[0].__qtde - mandatoryAssociation.qtdeOtimizada, 100, 'Qtde Baixa esperada é 300 - 200 = 100');
 assert.equal(mandatoryAssociation.tipoMatch, 'MATCH OS + MEDICAMENTO');
 assert.match(mandatoryAssociation.observacao, /linha OTIMIZAÇÃO do controle/);
