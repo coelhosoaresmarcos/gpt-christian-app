@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { associateRows, normalizeMedicineProduct } from './src/app.js';
+import { associateRows, normalizeMedicineProduct, normalizeOS } from './src/app.js';
 
 function hospital(overrides) {
   const row = {
@@ -48,6 +48,7 @@ function control(overrides) {
 }
 
 assert.equal(normalizeMedicineProduct('FAULDFLUOR - 500 mg'), 'FAULDFLUOR 500MG');
+assert.equal(normalizeOS('13157787.0'), '13157787', 'normalizeOS mantém todos os 8 dígitos da OS real e remove apenas o decimal do Excel');
 
 const validations = [];
 const hospitalRows = [
@@ -89,21 +90,34 @@ assert.equal(controlRows[3].__remaining, 0, 'saldo remanescente chega a zero');
 
 const mandatoryValidations = [];
 const mandatoryHospitalRows = [
-  hospital({ __rowId: 7, __os: '13157787', __osNormalizada: '1315778', __codBarra: '', __qtde: 250, __cliente: 'HOSPITAL SANTA HELENA', __paciente: 'VLADEMIR PERNIQUELLI', __medicamento: 'FAULDFLUOR 500MG', __principioAtivo: 'FAULDFLUOR 500MG' }),
+  hospital({ __rowId: 7, __os: '13157787', __osNormalizada: normalizeOS('13157787'), __codBarra: '', __qtde: 300, __cliente: 'HOSPITAL SANTA HELENA', __paciente: 'VLADEMIR PERNIQUELLI', __medicamento: 'FAULDFLUOR - 500 mg', __principioAtivo: 'FAULDFLUOR - 500 mg' }),
 ];
 const mandatoryControlRows = [
-  control({ __rowId: 6, __os: '13157787', __osNormalizada: '1315778', __codBarra: '', __qtde: 200, __lote: '25D0738', __data: '01/06/2026', __unidadeDestino: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg' }),
+  control({ __rowId: 6, __os: '13157787', __osNormalizada: normalizeOS('13157787'), __codBarra: '', __qtde: 200, __lote: '25D0738', __data: '01/06/2026', __unidadeDestino: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg' }),
 ];
 const mandatoryAssociations = associateRows(mandatoryHospitalRows, mandatoryControlRows, mandatoryValidations, 'Hospital Santa Helena');
 const mandatoryAssociation = mandatoryAssociations.find((item) => item.hospitalRowId === 7 && item.controlRowId === 6);
 assert.ok(mandatoryAssociation, 'associa a linha OTIMIZAÇÃO do controle sem CodBarra usando OS + medicamento normalizados');
+assert.equal(mandatoryHospitalRows[0].__osNormalizada, '13157787', 'OS 13157787 não pode ser truncada');
+assert.equal(mandatoryControlRows[0].__osNormalizada, '13157787', 'OS 13157787 do controle não pode ser truncada');
 assert.equal(mandatoryAssociation.qtdeOtimizada, 200, 'Qtde Otimizada vem da quantidade registrada na linha OTIMIZAÇÃO, limitada pela prescrição');
 assert.equal(mandatoryAssociation.loteOtimizacao, '25D0738', 'Lote Otimização vem exatamente da linha OTIMIZAÇÃO do controle');
 assert.equal(mandatoryAssociation.statusAssociacao, 'Parcialmente otimizado');
+assert.equal(mandatoryHospitalRows[0].__qtde - mandatoryAssociation.qtdeOtimizada, 100, 'Qtde Baixa esperada é 300 - 200 = 100');
 assert.equal(mandatoryAssociation.tipoMatch, 'MATCH OS + MEDICAMENTO');
 assert.match(mandatoryAssociation.observacao, /linha OTIMIZAÇÃO do controle/);
 assert.equal(mandatoryControlRows[0].__usedQuantity, 200);
 assert.equal(mandatoryControlRows[0].__status, 'Consumido');
 assert.ok(!mandatoryValidations.some((item) => item.Linha === 6 && item.Aba === 'CONTROLE DE MEDICAMENTOS' && item.Severidade === 'BLOQUEIO'), 'VALIDACAO não bloqueia a otimização sem CodBarra no controle');
+
+const destinationValidations = [];
+const destinationHospitalRows = [
+  hospital({ __rowId: 8, __os: '13157787', __osNormalizada: normalizeOS('13157787'), __codBarra: '', __qtde: 300, __cliente: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg', __principioAtivo: 'FAULDFLUOR - 500 mg' }),
+];
+const destinationControlRows = [
+  control({ __rowId: 8, __os: '13157787', __osNormalizada: normalizeOS('13157787'), __codBarra: '', __qtde: 200, __lote: '25D0738', __unidadeDestino: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg' }),
+];
+const destinationAssociations = associateRows(destinationHospitalRows, destinationControlRows, destinationValidations, 'Santa Helena São Bernardo');
+assert.ok(destinationAssociations.some((item) => item.hospitalRowId === 8 && item.controlRowId === 8), 'Unidade de Destino parcial/divergente não bloqueia associação por OS + medicamento');
 
 console.log('association optimization tests passed');
