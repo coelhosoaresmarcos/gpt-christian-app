@@ -48,6 +48,40 @@ function hospital(overrides) {
   };
 }
 
+
+function assertGenericMedicineBaseAssociation({ medicine, hospitalMedicine, hospitalAlternative = '', principleActive = '', barcode, rowId, os, expectedBase }) {
+  const validations = [];
+  const hospitalRows = [
+    hospital({
+      __rowId: rowId,
+      __os: os,
+      __codBarra: barcode,
+      __qtde: 500,
+      __medicamento: hospitalMedicine,
+      __medicamentoColunaI: hospitalMedicine,
+      __medicamentoAlternativo: hospitalAlternative,
+      __principioAtivo: principleActive || hospitalMedicine,
+    }),
+  ];
+  const controlRows = [
+    control({
+      __rowId: rowId + 1,
+      __os: os,
+      __qtde: 100,
+      __medicamento: medicine,
+      __unidadeDestino: 'Hospital Teste',
+    }),
+  ];
+
+  const associations = associateRows(hospitalRows, controlRows, validations, 'Hospital Teste');
+  assert.equal(controlRows[0].__medicamentoBase, expectedBase, `controle ${expectedBase} usa como base somente o texto antes do hífen`);
+  assert.equal(controlRows[0].__codBarraProdutoHospital, barcode, `controle ${expectedBase} localiza o CodBarra no hospital pelo medicamento base`);
+  assert.equal(controlRows[0].__key, `${normalizeOS(os)}|${barcode}`, `controle ${expectedBase} monta a chave final OS Normalizada + CodBarra`);
+  assert.ok(associations.find((item) => item.hospitalRowId === rowId && item.controlRowId === rowId + 1), `controle ${expectedBase} associa somente pela chave final OS+CodBarra`);
+  assert.equal(associations[0].statusAssociacao, 'Com otimização', `controle ${expectedBase} gera associação com otimização`);
+  assert.ok(!validations.some((item) => item.Severidade === 'BLOQUEIO'), `controle ${expectedBase} não gera bloqueio de associação`);
+}
+
 function control(overrides) {
   const osNormalizada = overrides.__osNormalizada ?? normalizeOS(overrides.__os);
   const codBarra = overrides.__codBarra ?? '';
@@ -221,6 +255,34 @@ const genlibbsEquivalenceControlRows = [
 const genlibbsEquivalenceAssociations = associateRows(genlibbsEquivalenceHospitalRows, genlibbsEquivalenceControlRows, genlibbsEquivalenceValidations, 'Hospital Ana Costa');
 assert.equal(genlibbsEquivalenceControlRows[0].__codBarraProdutoHospital, '7896094207257', 'controle GENLIBBS localiza CodBarra por equivalência com GENCITABINA');
 assert.ok(genlibbsEquivalenceAssociations.find((item) => item.hospitalRowId === 16 && item.controlRowId === 17), 'equivalência GENLIBBS/GENCITABINA serve para identificar CodBarra antes da associação OS+CodBarra');
+
+
+assertGenericMedicineBaseAssociation({
+  medicine: 'OXALIPLATINA - 100 mg',
+  hospitalMedicine: 'OXALIPLATINA 100MG',
+  barcode: '7899100',
+  rowId: 30,
+  os: '2.222.222,00',
+  expectedBase: 'OXALIPLATINA',
+});
+assertGenericMedicineBaseAssociation({
+  medicine: 'FAULDFLUOR - 500 mg',
+  hospitalMedicine: 'FAULDFLUOR 500MG',
+  barcode: '7899200',
+  rowId: 40,
+  os: '3.333.333,00',
+  expectedBase: 'FAULDFLUOR',
+});
+assertGenericMedicineBaseAssociation({
+  medicine: 'GEMCITABINA - 1000 mg',
+  hospitalMedicine: '',
+  hospitalAlternative: '',
+  principleActive: 'GENCITABINA',
+  barcode: '7899300',
+  rowId: 50,
+  os: '4.444.444,00',
+  expectedBase: 'GEMCITABINA',
+});
 
 const mismatchValidations = [];
 associateRows(
