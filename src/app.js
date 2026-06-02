@@ -5,10 +5,41 @@ const REQUIRED_SHEETS = [
   'BAIXAR',
   'RELATORIO',
   'VALIDACAO',
+  'DIAGNOSTICO_OTIMIZACOES',
 ];
 
 const MEDICINE_EQUIVALENCE_GROUPS = [
   ['GENLIBBS', 'GENCITABINA', 'GEMCITABINA', 'GEMCITABINE'],
+];
+
+
+const DIAGNOSTIC_COLUMNS = [
+  'Linha do controle',
+  'Motivo',
+  'OS controle original',
+  'OS controle normalizada',
+  'Data controle',
+  'Unidade origem',
+  'Unidade destino',
+  'Medicamento controle',
+  'Medicamento base controle',
+  'Quantidade controle',
+  'Lote controle',
+  'Validade controle',
+  'Hospital informado na tela',
+  'Destino compatível',
+  'Encontrou OS no hospital',
+  'Quantidade de linhas do hospital com a mesma OS',
+  'Datas encontradas no hospital para essa OS',
+  'Data compatível por dia/mês',
+  'Medicamentos hospital coluna I encontrados na mesma OS',
+  'Medicamentos alternativos coluna O encontrados na mesma OS',
+  'Princípios ativos coluna P encontrados na mesma OS',
+  'Medicamento compatível',
+  'CodBarra candidato encontrado',
+  'Quantidade de CodBarra candidatos',
+  'Status final da linha',
+  'Motivo final exato',
 ];
 
 const EXCLUDED_ITEMS = [
@@ -115,10 +146,11 @@ async function processChristianWorkbook({ hospitalFile, controlFile, hospitalNam
   if (!controlSheet) throw new Error('A planilha de controle precisa conter a aba CONTROLE DE MEDICAMENTOS.');
 
   const validations = [];
+  const optimizationDiagnostics = [];
   const hospitalRows = readHospitalRows(hospitalSheet, validations);
   const controlRows = readControlRows(controlSheet, validations);
-  const associations = associateRows(hospitalRows, controlRows, validations, hospitalName);
-  const outputWorkbook = buildOutputWorkbook(hospitalRows, controlRows, associations, validations, hospitalSheet);
+  const associations = associateRows(hospitalRows, controlRows, validations, hospitalName, optimizationDiagnostics);
+  const outputWorkbook = buildOutputWorkbook(hospitalRows, controlRows, associations, validations, hospitalSheet, optimizationDiagnostics);
   const buffer = await outputWorkbook.xlsx.writeBuffer();
 
   return {
@@ -232,7 +264,7 @@ function readControlRows(sheet, validations) {
   return rows;
 }
 
-function associateRows(hospitalRows, controlRows, validations, hospitalName) {
+function associateRows(hospitalRows, controlRows, validations, hospitalName, optimizationDiagnostics = []) {
   const associations = [];
   const usableHospitalRows = hospitalRows.filter((row) => !row.__isExcluded);
   const controlsByKey = new Map();
@@ -279,8 +311,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
       continue;
     }
     if (!destinationOk) {
-      markOptimizationNotUsed(control, validations, 'Unidade de Destino não contém o hospital informado; otimização fora do filtro obrigatório.');
-      continue;
+      validations.push(validation('Unidade de Destino incompatível', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Unidade de Destino não contém o hospital informado; alerta não bloqueante. A associação continuará por OS Normalizada + medicamento + CodBarra.'));
     }
     if (!control.__osNormalizada) {
       markOptimizationNotUsed(control, validations, 'OS ausente ou inválida no controle; não é permitido associar sem OS Normalizada.');
@@ -297,11 +328,19 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
       continue;
     }
 
+    if (!String(control.__data ?? '').trim() || !parseDate(control.__data)) {
+      validations.push(validation('Data do controle vazia ou inválida', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Data do controle vazia ou inválida; alerta não bloqueante. A associação continuará por OS Normalizada + medicamento + CodBarra.'));
+    }
+
     const dateCompatibleRows = sameOS.filter((hospital) => sameDayAndMonth(control.__data, hospital.__data));
     if (!dateCompatibleRows.length) {
+      const medicineCompatibleSameOS = sameOS.some((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
       setValidationCandidateContext(control, sameOS, 'data sem coincidência de dia e mês com o hospital');
-      markOptimizationNotUsed(control, validations, validationDetails(control, 'data sem coincidência de dia e mês com o hospital'));
-      validations.push(validation('Otimização sem correspondência segura', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'OS encontrada, mas a data do controle não coincide com dia/mês da data do hospital.'));
+      const dateMismatchMessage = medicineCompatibleSameOS
+        ? 'OS encontrada, medicamento compatível, mas data do controle não coincide com dia/mês da data do hospital.'
+        : 'OS encontrada, mas data do controle não coincide com dia/mês da data do hospital.';
+      markOptimizationNotUsed(control, validations, dateMismatchMessage);
+      validations.push(validation('Otimização sem correspondência segura', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, dateMismatchMessage));
       continue;
     }
 
@@ -321,8 +360,9 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
     }
     if (possibleBarcodes.length > 1) {
       setValidationCandidateContext(control, compatible, 'múltiplos CodBarra candidatos');
+      const barcodeDetails = describeBarcodeCandidates(compatible);
       refuseControl(control, validations, 'Múltiplos CodBarra possíveis na mesma OS', 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.');
-      validations.push(validation('Múltiplos CodBarra possíveis na mesma OS', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.'));
+      validations.push(validation('Múltiplos CodBarra possíveis na mesma OS', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `CodBarra candidatos: ${barcodeDetails}.`));
       continue;
     }
 
@@ -411,7 +451,92 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName) {
       validations.push(validation('Quantidade otimizada não utilizada', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Sobra de ${control.__remaining} após otimização pela chave ${control.__key}.`));
     }
   }
+  optimizationDiagnostics.splice(0, optimizationDiagnostics.length, ...buildOptimizationDiagnostics(controlRows, usableHospitalRows, hospitalName));
   return associations;
+}
+
+
+function buildOptimizationDiagnostics(controlRows, hospitalRows, hospitalName) {
+  return controlRows
+    .filter((control) => normalizeText(control.__motivo).includes('OTIMIZA'))
+    .map((control) => optimizationDiagnosticRecord(control, hospitalRows, hospitalName));
+}
+
+function optimizationDiagnosticRecord(control, hospitalRows, hospitalName) {
+  const sameOS = hospitalRows.filter((hospital) => hospital.__osNormalizada && hospital.__osNormalizada === control.__osNormalizada);
+  const controlDateParsed = parseDate(control.__data);
+  const hasControlDateText = String(control.__data ?? '').trim() !== '';
+  const dateCompatibleRows = sameOS.filter((hospital) => sameDayAndMonth(control.__data, hospital.__data));
+  const medicineRowsScope = dateCompatibleRows.length ? dateCompatibleRows : sameOS;
+  const compatible = medicineRowsScope.filter((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
+  const barcodeCandidates = unique(compatible.map((hospital) => hospital.__codBarra).filter(Boolean));
+  const destinationOk = destinationSeemsCompatible(control.__unidadeDestino, hospitalName);
+  const dateCompatible = !sameOS.length || !hasControlDateText || !controlDateParsed || dateCompatibleRows.length > 0;
+  const medicineCompatibleInOS = sameOS.some((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
+  const status = diagnosticStatus(control);
+
+  return {
+    'Linha do controle': control.__rowId,
+    Motivo: control.__motivo,
+    'OS controle original': control.__os,
+    'OS controle normalizada': control.__osNormalizada,
+    'Data controle': control.__data,
+    'Unidade origem': control.__unidadeOrigem,
+    'Unidade destino': control.__unidadeDestino,
+    'Medicamento controle': control.__medicamento,
+    'Medicamento base controle': control.__medicamentoBase,
+    'Quantidade controle': control.__available ?? control.__qtde ?? '',
+    'Lote controle': control.__lote,
+    'Validade controle': control.__validade,
+    'Hospital informado na tela': hospitalName || '(não informado)',
+    'Destino compatível': destinationOk ? 'SIM' : 'NÃO',
+    'Encontrou OS no hospital': sameOS.length ? 'SIM' : 'NÃO',
+    'Quantidade de linhas do hospital com a mesma OS': sameOS.length,
+    'Datas encontradas no hospital para essa OS': unique(sameOS.map((hospital) => formatDate(hospital.__data)).filter(Boolean)).join('; '),
+    'Data compatível por dia/mês': dateCompatible ? 'SIM' : 'NÃO',
+    'Medicamentos hospital coluna I encontrados na mesma OS': unique(sameOS.map((hospital) => hospital.__medicamentoColunaI || hospital.__medicamento).filter(Boolean)).join('; '),
+    'Medicamentos alternativos coluna O encontrados na mesma OS': unique(sameOS.map((hospital) => hospital.__medicamentoAlternativo).filter(Boolean)).join('; '),
+    'Princípios ativos coluna P encontrados na mesma OS': unique(sameOS.map((hospital) => hospital.__principioAtivo).filter(Boolean)).join('; '),
+    'Medicamento compatível': medicineCompatibleInOS ? 'SIM' : 'NÃO',
+    'CodBarra candidato encontrado': describeBarcodeCandidates(compatible),
+    'Quantidade de CodBarra candidatos': barcodeCandidates.length,
+    'Status final da linha': status,
+    'Motivo final exato': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed }),
+  };
+}
+
+function diagnosticStatus(control) {
+  if (control.__status === 'Consumido') return 'CONSUMIDA';
+  if (control.__status === 'Parcialmente consumido') return 'PARCIALMENTE CONSUMIDA';
+  if (control.__status === 'Associação recusada') return 'RECUSADA';
+  return 'NÃO USADA';
+}
+
+function diagnosticFinalReason(control, context) {
+  if (control.__status === 'Consumido') return `Consumida pela chave final ${control.__key}.`;
+  if (control.__status === 'Parcialmente consumido') return `Parcialmente consumida pela chave final ${control.__key}; saldo restante ${control.__remaining}.`;
+  if (!context.destinationOk && (control.__usedQuantity ?? 0) > 0) return `Unidade de Destino incompatível gerou alerta, mas não bloqueou; ${control.__observacao}`;
+  if (!Number.isFinite(control.__available) || control.__available <= 0) return validationDetails(control, 'quantidade inválida');
+  if (!control.__osNormalizada) return 'OS ausente ou inválida no controle; não é permitido associar sem OS Normalizada.';
+  if (!context.sameOS.length) return validationDetails(control, 'OS não encontrada no hospital');
+  if (!context.dateCompatible && context.medicineCompatibleInOS) return 'OS encontrada, medicamento compatível, mas data do controle não coincide com dia/mês da data do hospital.';
+  if (!context.dateCompatible) return 'OS encontrada, mas data do controle não coincide com dia/mês da data do hospital.';
+  if (!context.medicineCompatibleInOS) return 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.';
+  if (!context.barcodeCandidates.length) return 'Medicamento compatível encontrado na OS, mas sem CodBarra preenchido no hospital para criar a chave final.';
+  if (context.barcodeCandidates.length > 1) return `Múltiplos CodBarra possíveis para mesma OS e Medicamento Base: ${describeBarcodeCandidates(context.sameOS.filter((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital)))}.`;
+  if (control.__codBarra && control.__codBarra !== context.barcodeCandidates[0]) return 'CodBarra do controle diverge do CodBarra compatível identificado no hospital.';
+  if (!context.hasControlDateText || !context.controlDateParsed) return `Data do controle vazia ou inválida gerou alerta não bloqueante; ${control.__observacao || 'associação tentou seguir por OS + medicamento + CodBarra.'}`;
+  return control.__observacao || 'Otimização não consumida após a avaliação por OS Normalizada + CodBarra.';
+}
+
+function describeBarcodeCandidates(rows) {
+  const descriptions = [];
+  for (const row of rows) {
+    if (!row.__codBarra) continue;
+    const description = `${row.__codBarra} (I: ${row.__medicamentoColunaI || row.__medicamento || '(vazio)'}; O: ${row.__medicamentoAlternativo || '(vazio)'}; P: ${row.__principioAtivo || '(vazio)'})`;
+    if (!descriptions.includes(description)) descriptions.push(description);
+  }
+  return descriptions.join('; ');
 }
 
 
@@ -563,7 +688,7 @@ function appendUniqueText(current, value) {
   return parts.join('; ');
 }
 
-function buildOutputWorkbook(hospitalRows, controlRows, associations, validations, originalHospitalSheet) {
+function buildOutputWorkbook(hospitalRows, controlRows, associations, validations, originalHospitalSheet, optimizationDiagnostics = []) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Christian Web App';
   workbook.created = new Date();
@@ -626,6 +751,7 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
     'Status Otimização': row['Status Otimização'],
   })), ['Data', 'Cliente', 'Paciente', 'Medicamento Hospital', 'Qtde Prescrita', 'Qtde Otimizada', 'Origem da Otimização', 'Lote Otimização', 'Qtde Baixa', 'Lote da Baixa', 'Status Otimização']);
   addJsonSheet(workbook, REQUIRED_SHEETS[5], validations);
+  addJsonSheet(workbook, REQUIRED_SHEETS[6], optimizationDiagnostics, DIAGNOSTIC_COLUMNS);
 
   workbook.worksheets.forEach(formatWorksheet);
   return workbook;
