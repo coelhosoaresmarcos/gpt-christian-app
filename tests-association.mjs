@@ -359,15 +359,55 @@ const destinationWarningControlRows = [
   control({ __rowId: 61, __os: '1.315.669,00', __qtde: 100, __medicamento: 'GEMCITABINA - 1000 mg', __unidadeDestino: 'TEXTO DIVERGENTE', __data: '01/06/2026' }),
 ];
 const destinationWarningAssociations = associateRows(destinationWarningHospitalRows, destinationWarningControlRows, destinationWarningValidations, 'Hospital Ana Costa', destinationDiagnosticRows);
-assert.ok(destinationWarningAssociations.find((item) => item.hospitalRowId === 60 && item.controlRowId === 61), 'Unidade de Destino incompatível não bloqueia associação por OS + medicamento + CodBarra');
-assert.ok(destinationWarningValidations.some((item) => item.Tipo === 'Unidade de Destino incompatível' && item.Severidade === 'ALERTA'), 'Unidade de Destino incompatível gera alerta não bloqueante');
+assert.ok(!destinationWarningAssociations.find((item) => item.hospitalRowId === 60 && item.controlRowId === 61), 'Unidade de Destino incompatível bloqueia associação por OS + medicamento + CodBarra');
+assert.ok(destinationWarningValidations.some((item) => item.Tipo === 'Unidade de Destino incompatível' && item.Severidade === 'BLOQUEIO'), 'Unidade de Destino incompatível gera bloqueio obrigatório');
+assert.equal(destinationWarningControlRows[0].__status, 'Não elegível - destino diferente', 'controle incompatível fica não elegível por destino diferente');
+assert.equal(destinationWarningControlRows[0].__remaining, 0, 'controle incompatível não mantém saldo disponível para otimização');
+assert.equal(destinationWarningControlRows[0].__codBarraProdutoHospital, '', 'controle incompatível não recebe CodBarra Produto Hospital');
+assert.equal(destinationWarningControlRows[0].__key, '', 'controle incompatível não cria chave OS+CodBarra');
 assert.equal(destinationDiagnosticRows.length, 1, 'gera uma linha de diagnóstico para cada linha OTIMIZAÇÃO');
+assert.equal(destinationDiagnosticRows[0]['Unidade avaliada'], 'Hospital Ana Costa', 'diagnóstico registra unidade avaliada');
+assert.equal(destinationDiagnosticRows[0]['Unidade de Destino da otimização'], 'TEXTO DIVERGENTE', 'diagnóstico registra Unidade de Destino da otimização');
 assert.equal(destinationDiagnosticRows[0]['Destino compatível'], 'NÃO', 'diagnóstico registra destino incompatível');
-assert.equal(destinationDiagnosticRows[0]['Encontrou OS no hospital'], 'SIM', 'diagnóstico registra OS encontrada');
-assert.equal(destinationDiagnosticRows[0]['Medicamento compatível'], 'SIM', 'diagnóstico registra medicamento compatível por equivalência');
-assert.equal(destinationDiagnosticRows[0]['CodBarra candidato encontrado'], '7896094207257 (I: GENLIBBS; O: GENLIBBS; P: GENCITABINA)', 'diagnóstico lista CodBarra candidato com colunas I/O/P');
-assert.equal(destinationDiagnosticRows[0]['Quantidade de CodBarra candidatos'], 1, 'diagnóstico conta CodBarra candidato único');
-assert.equal(destinationDiagnosticRows[0]['Status final da linha'], 'CONSUMIDA', 'diagnóstico mostra status final consumido');
+assert.equal(destinationDiagnosticRows[0]['Elegível para otimização'], 'NÃO', 'diagnóstico registra não elegível para destino incompatível');
+assert.equal(destinationDiagnosticRows[0]['Status final da linha'], 'NÃO ELEGÍVEL - DESTINO DIFERENTE', 'diagnóstico mostra status final não elegível');
+assert.equal(destinationDiagnosticRows[0]['Motivo final'], 'Unidade de Destino da otimização não corresponde à unidade avaliada.', 'diagnóstico explica recusa por destino diferente');
+
+
+const santaHelenaDestinationDiagnostics = [];
+const santaHelenaDestinationValidations = [];
+const santaHelenaHospitalRows = [
+  hospital({ __rowId: 70, __os: '1.315.768,00', __codBarra: '7896094207257', __qtde: 300, __cliente: 'HOSPITAL SANTA HELENA SAO BERNARDO DO CAMPO', __paciente: 'ODETE DE SOUZA', __medicamento: 'GENLIBBS', __medicamentoColunaI: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+  hospital({ __rowId: 71, __os: '13157787', __codBarra: '7895000', __qtde: 300, __cliente: 'HOSPITAL SANTA HELENA SAO BERNARDO DO CAMPO', __paciente: 'VLADEMIR PERNIQUELLI', __medicamento: 'FAULDFLUOR 500MG', __principioAtivo: 'FAULDFLUOR' }),
+];
+const santaHelenaControlRows = [
+  control({ __rowId: 72, __os: '1.315.768,00', __qtde: 300, __unidadeDestino: 'ANA COSTA', __paciente: 'ODETE DE SOUZA', __medicamento: 'GENLIBBS - 1000 mg' }),
+  control({ __rowId: 73, __os: '13157787', __qtde: 200, __unidadeDestino: 'HOSPITAL SANTA HELENA', __paciente: 'VLADEMIR PERNIQUELLI', __medicamento: 'FAULDFLUOR - 500 mg' }),
+];
+const santaHelenaAssociations = associateRows(santaHelenaHospitalRows, santaHelenaControlRows, santaHelenaDestinationValidations, '', santaHelenaDestinationDiagnostics);
+assert.ok(!santaHelenaAssociations.some((item) => item.controlRowId === 72), 'GCIB/GENLIBBS com destino ANA COSTA não é usado no relatório Santa Helena quando hospitalName está vazio');
+assert.ok(santaHelenaAssociations.some((item) => item.hospitalRowId === 71 && item.controlRowId === 73), 'FAULDFLUOR com destino HOSPITAL SANTA HELENA continua elegível no relatório Santa Helena');
+assert.equal(santaHelenaControlRows[0].__status, 'Não elegível - destino diferente', 'GENLIBBS de ANA COSTA é recusado antes de associação');
+assert.equal(santaHelenaControlRows[1].__tipoMatch, 'MATCH FORTE', 'FAULDFLUOR de Santa Helena ainda pode ter MATCH FORTE');
+assert.equal(santaHelenaDestinationDiagnostics[0]['Unidade avaliada'], 'HOSPITAL SANTA HELENA SAO BERNARDO DO CAMPO', 'unidade avaliada é inferida pelo Cliente/Hospital mais frequente');
+assert.equal(santaHelenaDestinationDiagnostics[0]['Unidade de Destino da otimização'], 'ANA COSTA', 'diagnóstico Santa Helena registra destino ANA COSTA');
+assert.equal(santaHelenaDestinationDiagnostics[0]['Destino compatível'], 'NÃO', 'diagnóstico Santa Helena marca ANA COSTA como incompatível');
+assert.equal(santaHelenaDestinationDiagnostics[0]['Elegível para otimização'], 'NÃO', 'diagnóstico Santa Helena marca GENLIBBS como não elegível');
+assert.equal(santaHelenaDestinationDiagnostics[0]['Motivo final'], 'Unidade de Destino da otimização não corresponde à unidade avaliada.', 'diagnóstico Santa Helena explica recusa do GENLIBBS');
+assert.equal(santaHelenaDestinationDiagnostics[1]['Destino compatível'], 'SIM', 'diagnóstico Santa Helena marca HOSPITAL SANTA HELENA como compatível');
+
+const unknownUnitDiagnostics = [];
+const unknownUnitValidations = [];
+const unknownUnitAssociations = associateRows(
+  [hospital({ __rowId: 80, __os: '1234567', __codBarra: '7898000', __qtde: 10, __cliente: '', __medicamento: 'FAULDFLUOR 500MG', __principioAtivo: 'FAULDFLUOR' })],
+  [control({ __rowId: 81, __os: '1234567', __qtde: 5, __unidadeDestino: 'HOSPITAL SANTA HELENA', __medicamento: 'FAULDFLUOR - 500 mg' })],
+  unknownUnitValidations,
+  '',
+  unknownUnitDiagnostics,
+);
+assert.equal(unknownUnitAssociations.length, 0, 'sem hospitalName e sem Cliente/Hospital inferível não aplica otimizações');
+assert.ok(unknownUnitValidations.some((item) => item.Mensagem === 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.'), 'VALIDACAO registra unidade avaliada não identificada');
+assert.equal(unknownUnitDiagnostics[0]['Motivo final'], 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.', 'diagnóstico explica bloqueio por unidade não identificada');
 
 const dateDiagnosticRows = [];
 const dateMismatchValidations = [];
