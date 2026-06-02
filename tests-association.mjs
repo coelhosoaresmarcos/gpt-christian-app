@@ -98,6 +98,7 @@ function control(overrides) {
     __motivo: overrides.__motivo ?? 'OTIMIZAÇÃO',
     __unidadeOrigem: overrides.__unidadeOrigem ?? 'Centro Médico Origem',
     __unidadeDestino: overrides.__unidadeDestino ?? 'Hospital Teste',
+    __paciente: overrides.__paciente ?? 'Paciente',
     __validade: overrides.__validade ?? '30/04/2027',
     __codBarra: codBarra,
     __codBarraProdutoHospital: '',
@@ -219,8 +220,8 @@ assert.equal(mandatoryAssociation.loteOtimizacao, '25D0738', 'Lote Otimização 
 assert.equal(mandatoryAssociation.validadeOtimizacao, '30/04/2027', 'Validade Otimização vem da mesma linha OTIMIZAÇÃO do controle');
 assert.equal(mandatoryAssociation.loteOtimizacaoComValidade, '25D0738 - Val.: 30/04/2027', 'Lote Otimização com Validade combina lote e validade da mesma linha do controle');
 assert.equal(mandatoryAssociation.statusAssociacao, 'Com otimização');
-assert.equal(mandatoryAssociation.tipoMatch, 'MATCH MÉDIO');
-assert.equal(mandatoryAssociation.confianca, 'Média');
+assert.equal(mandatoryAssociation.tipoMatch, 'MATCH FORTE');
+assert.equal(mandatoryAssociation.confianca, 'Alta');
 const mandatoryReportSummary = summarizeAssociations(mandatoryAssociations).get(7);
 assert.deepEqual(mandatoryReportSummary.origens, ['CENTRO MEDICO PITANGUEIRAS'], 'RELATORIO/BAIXAR usa a origem da otimização resumida');
 assert.deepEqual(mandatoryReportSummary.lotes, ['25D0738'], 'RELATORIO/BAIXAR mantém o lote 25D0738 resumido para auditoria');
@@ -244,6 +245,38 @@ assert.equal(genlibbsControlRows[0].__codBarraProdutoHospital, '7896094207257', 
 assert.equal(genlibbsControlRows[0].__key, '1315669|7896094207257', 'controle GENLIBBS cria chave final OS_NORMALIZADA|CodBarra');
 assert.ok(genlibbsAssociations.find((item) => item.hospitalRowId === 9 && item.controlRowId === 10), 'controle GENLIBBS associa somente após criar chave OS+CodBarra');
 assert.equal(genlibbsAssociations[0].statusAssociacao, 'Com otimização', 'controle GENLIBBS gera status Com otimização');
+
+const odeteDivergentOSValidations = [];
+const odeteDivergentOSHospitalRows = [
+  hospital({ __rowId: 11, __os: '1.315.669,00', __codBarra: '7896094207257', __qtde: 1300, __cliente: 'HOSPITAL ANA COSTA', __paciente: 'ODETE DE SOUSA', __medicamento: 'GENLIBBS', __medicamentoColunaI: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+];
+const odeteDivergentOSControlRows = [
+  control({ __rowId: 12, __os: '1.315.768,00', __qtde: 300, __lote: '26A0728', __validade: '31/01/2028', __data: '01/06/2026', __unidadeOrigem: 'CENTRO MEDICO PITANGUEIRAS', __unidadeDestino: 'ANA COSTA', __paciente: 'ODETE DE SOUZA', __medicamento: 'GENLIBBS - 1000 mg' }),
+];
+const odeteDivergentOSAssociations = associateRows(odeteDivergentOSHospitalRows, odeteDivergentOSControlRows, odeteDivergentOSValidations, 'Hospital Ana Costa');
+const odeteDivergentOSAssociation = odeteDivergentOSAssociations.find((item) => item.hospitalRowId === 11 && item.controlRowId === 12);
+assert.ok(odeteDivergentOSAssociation, 'controle GENLIBBS da Odete associa por MATCH MÉDIO AUDITADO quando a OS diverge');
+assert.equal(odeteDivergentOSControlRows[0].__codBarraProdutoHospital, '7896094207257', 'Odete usa o CodBarra único do hospital');
+assert.equal(odeteDivergentOSControlRows[0].__key, '1315669|7896094207257', 'Odete usa a chave final da linha do hospital');
+assert.equal(odeteDivergentOSControlRows[0].__tipoMatch, 'MATCH MÉDIO AUDITADO', 'Odete registra o tipo de match auditado');
+assert.equal(odeteDivergentOSControlRows[0].__hospitalAssociado, '1.315.669,00', 'Odete registra a OS original associada do hospital');
+assert.equal(odeteDivergentOSAssociation.qtdeOtimizada, 300, 'Odete otimiza 300 conforme saldo do controle');
+assert.equal(odeteDivergentOSAssociation.origemOtimizacao, 'CENTRO MEDICO PITANGUEIRAS', 'Odete mantém a origem da otimização');
+assert.equal(odeteDivergentOSAssociation.loteOtimizacaoComValidade, '26A0728 - Val.: 31/01/2028', 'Odete mantém lote e validade da otimização');
+assert.ok(odeteDivergentOSValidations.some((item) => item.Mensagem === 'OS divergente entre controle e hospital. Controle: 1315768. Hospital: 1315669. Associação realizada por paciente + data + medicamento + CodBarra único.'), 'VALIDACAO registra a divergência de OS da Odete');
+
+const multipleMediumBarcodeValidations = [];
+const multipleMediumBarcodeAssociations = associateRows(
+  [
+    hospital({ __rowId: 13, __os: '1.315.669,00', __codBarra: '7896094207257', __qtde: 1300, __cliente: 'HOSPITAL ANA COSTA', __paciente: 'ODETE DE SOUSA', __medicamento: 'GENLIBBS', __medicamentoColunaI: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+    hospital({ __rowId: 14, __os: '1.315.670,00', __codBarra: '7896094207258', __qtde: 1300, __cliente: 'HOSPITAL ANA COSTA', __paciente: 'ODETE DE SOUSA', __medicamento: 'GENLIBBS', __medicamentoColunaI: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+  ],
+  [control({ __rowId: 15, __os: '1.315.768,00', __qtde: 300, __data: '01/06/2026', __unidadeDestino: 'ANA COSTA', __paciente: 'ODETE DE SOUZA', __medicamento: 'GENLIBBS - 1000 mg' })],
+  multipleMediumBarcodeValidations,
+  'Hospital Ana Costa',
+);
+assert.ok(!multipleMediumBarcodeAssociations.some((item) => item.controlRowId === 15 && item.statusAssociacao === 'Com otimização'), 'múltiplos CodBarra no MATCH MÉDIO AUDITADO recusam associação automática');
+assert.ok(multipleMediumBarcodeValidations.some((item) => item.Mensagem.includes('7896094207257') && item.Mensagem.includes('7896094207258')), 'VALIDACAO lista todos os CodBarra candidatos quando há múltiplos');
 
 const genlibbsEquivalenceValidations = [];
 const genlibbsEquivalenceHospitalRows = [
