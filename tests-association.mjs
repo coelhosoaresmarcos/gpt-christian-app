@@ -317,6 +317,54 @@ associateRows(
 assert.ok(multiBarcodeValidations.some((item) => item.Mensagem === 'Múltiplos CodBarra possíveis para mesma OS e Medicamento Base.'), 'bloqueia associação automática com múltiplos CodBarra para mesma OS e Medicamento Base');
 
 
+const destinationDiagnosticRows = [];
+const destinationWarningValidations = [];
+const destinationWarningHospitalRows = [
+  hospital({ __rowId: 60, __os: '1.315.669,00', __codBarra: '7896094207257', __qtde: 1300, __cliente: 'HOSPITAL ANA COSTA', __paciente: 'ODETE DE SOUSA', __medicamento: 'GENLIBBS', __medicamentoColunaI: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+];
+const destinationWarningControlRows = [
+  control({ __rowId: 61, __os: '1.315.669,00', __qtde: 100, __medicamento: 'GEMCITABINA - 1000 mg', __unidadeDestino: 'TEXTO DIVERGENTE', __data: '01/06/2026' }),
+];
+const destinationWarningAssociations = associateRows(destinationWarningHospitalRows, destinationWarningControlRows, destinationWarningValidations, 'Hospital Ana Costa', destinationDiagnosticRows);
+assert.ok(destinationWarningAssociations.find((item) => item.hospitalRowId === 60 && item.controlRowId === 61), 'Unidade de Destino incompatível não bloqueia associação por OS + medicamento + CodBarra');
+assert.ok(destinationWarningValidations.some((item) => item.Tipo === 'Unidade de Destino incompatível' && item.Severidade === 'ALERTA'), 'Unidade de Destino incompatível gera alerta não bloqueante');
+assert.equal(destinationDiagnosticRows.length, 1, 'gera uma linha de diagnóstico para cada linha OTIMIZAÇÃO');
+assert.equal(destinationDiagnosticRows[0]['Destino compatível'], 'NÃO', 'diagnóstico registra destino incompatível');
+assert.equal(destinationDiagnosticRows[0]['Encontrou OS no hospital'], 'SIM', 'diagnóstico registra OS encontrada');
+assert.equal(destinationDiagnosticRows[0]['Medicamento compatível'], 'SIM', 'diagnóstico registra medicamento compatível por equivalência');
+assert.equal(destinationDiagnosticRows[0]['CodBarra candidato encontrado'], '7896094207257 (I: GENLIBBS; O: GENLIBBS; P: GENCITABINA)', 'diagnóstico lista CodBarra candidato com colunas I/O/P');
+assert.equal(destinationDiagnosticRows[0]['Quantidade de CodBarra candidatos'], 1, 'diagnóstico conta CodBarra candidato único');
+assert.equal(destinationDiagnosticRows[0]['Status final da linha'], 'CONSUMIDA', 'diagnóstico mostra status final consumido');
+
+const dateDiagnosticRows = [];
+const dateMismatchValidations = [];
+associateRows(
+  [hospital({ __rowId: 62, __os: '5555555', __codBarra: '7896200', __qtde: 10, __medicamento: 'OXALIPLATINA 100MG', __principioAtivo: 'OXALIPLATINA', __data: '01/06/2026' })],
+  [control({ __rowId: 63, __os: '5555555', __qtde: 1, __medicamento: 'OXALIPLATINA - 100 mg', __data: '02/06/2026' })],
+  dateMismatchValidations,
+  'Hospital Teste',
+  dateDiagnosticRows,
+);
+assert.ok(dateMismatchValidations.some((item) => item.Mensagem === 'OS encontrada, medicamento compatível, mas data do controle não coincide com dia/mês da data do hospital.'), 'data divergente registra mensagem auditável exata quando OS e medicamento são compatíveis');
+assert.equal(dateDiagnosticRows[0]['Data compatível por dia/mês'], 'NÃO', 'diagnóstico registra data incompatível por dia/mês');
+assert.equal(dateDiagnosticRows[0]['Motivo final exato'], 'OS encontrada, medicamento compatível, mas data do controle não coincide com dia/mês da data do hospital.', 'diagnóstico explica bloqueio por data com mensagem exata');
+
+const multipleBarcodeDiagnosticRows = [];
+associateRows(
+  [
+    hospital({ __rowId: 64, __os: '6666666', __codBarra: '7896400', __qtde: 10, __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+    hospital({ __rowId: 65, __os: '6666666', __codBarra: '7896401', __qtde: 10, __medicamento: 'GENLIBBS', __medicamentoAlternativo: 'GENLIBBS', __principioAtivo: 'GENCITABINA' }),
+  ],
+  [control({ __rowId: 66, __os: '6666666', __qtde: 1, __medicamento: 'GENCITABINA - 1000 mg' })],
+  [],
+  'Hospital Teste',
+  multipleBarcodeDiagnosticRows,
+);
+assert.equal(multipleBarcodeDiagnosticRows[0]['Quantidade de CodBarra candidatos'], 2, 'diagnóstico registra múltiplos CodBarra candidatos');
+assert.equal(multipleBarcodeDiagnosticRows[0]['Status final da linha'], 'RECUSADA', 'múltiplos CodBarra recusam associação automática');
+assert.ok(multipleBarcodeDiagnosticRows[0]['Motivo final exato'].includes('7896400') && multipleBarcodeDiagnosticRows[0]['Motivo final exato'].includes('7896401'), 'diagnóstico lista quais CodBarra causaram a recusa');
+
+
 const noOptimizationRecord = downloadRecord(hospital({ __rowId: 8, __os: '7654321', __codBarra: '7896000', __qtde: 10 }), undefined);
 assert.equal(noOptimizationRecord['Origem da Otimização'], 'Sem otimização', 'RELATORIO mantém origem Sem otimização sem associação');
 assert.equal(noOptimizationRecord['Lote Otimização'], 'Sem otimização', 'RELATORIO mantém lote Sem otimização sem associação');
