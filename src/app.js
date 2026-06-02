@@ -21,6 +21,8 @@ const DIAGNOSTIC_COLUMNS = [
   'Data controle',
   'Unidade origem',
   'Unidade destino',
+  'Unidade avaliada',
+  'Unidade de Destino da otimização',
   'Medicamento controle',
   'Medicamento base controle',
   'Quantidade controle',
@@ -28,6 +30,7 @@ const DIAGNOSTIC_COLUMNS = [
   'Validade controle',
   'Hospital informado na tela',
   'Destino compatível',
+  'Elegível para otimização',
   'Encontrou OS no hospital',
   'Quantidade de linhas do hospital com a mesma OS',
   'Datas encontradas no hospital para essa OS',
@@ -40,6 +43,7 @@ const DIAGNOSTIC_COLUMNS = [
   'Quantidade de CodBarra candidatos',
   'Status final da linha',
   'Motivo final exato',
+  'Motivo final',
 ];
 
 const EXCLUDED_ITEMS = [
@@ -149,7 +153,8 @@ async function processChristianWorkbook({ hospitalFile, controlFile, hospitalNam
   const optimizationDiagnostics = [];
   const hospitalRows = readHospitalRows(hospitalSheet, validations);
   const controlRows = readControlRows(controlSheet, validations);
-  const associations = associateRows(hospitalRows, controlRows, validations, hospitalName, optimizationDiagnostics);
+  const evaluatedHospitalUnit = resolveEvaluatedHospitalUnit(hospitalRows, hospitalName, validations);
+  const associations = associateRows(hospitalRows, controlRows, validations, evaluatedHospitalUnit, optimizationDiagnostics);
   const outputWorkbook = buildOutputWorkbook(hospitalRows, controlRows, associations, validations, hospitalSheet, optimizationDiagnostics);
   const buffer = await outputWorkbook.xlsx.writeBuffer();
 
@@ -269,10 +274,8 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
   const usableHospitalRows = hospitalRows.filter((row) => !row.__isExcluded);
   const controlsByKey = new Map();
   const keyUsage = new Map();
-
-  if (!hospitalName) {
-    validations.push({ Tipo: 'Filtro de otimização', Severidade: 'ALERTA', Aba: 'CONTROLE DE MEDICAMENTOS', Linha: 'todas', OS_Normalizada: '', CodBarra: '', Mensagem: 'Nome do hospital não informado; o filtro por Unidade de Destino não foi aplicado.' });
-  }
+  const evaluatedHospitalUnit = resolveEvaluatedHospitalUnit(usableHospitalRows, hospitalName, validations);
+  const canApplyOptimizations = Boolean(evaluatedHospitalUnit);
 
   for (const hospital of usableHospitalRows) {
     hospital.__osNormalizada = normalizeOS(hospital.__osNormalizada || hospital.__os);
@@ -297,12 +300,9 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
   for (const control of controlRows) {
     prepareControlForAssociation(control);
     const isOptimization = normalizeText(control.__motivo).includes('OTIMIZA');
-    const destinationOk = destinationSeemsCompatible(control.__unidadeDestino, hospitalName);
-    const sameOS = usableHospitalRows.filter((hospital) => hospital.__osNormalizada && hospital.__osNormalizada === control.__osNormalizada);
-    const medicineCountInOS = unique(sameOS.map((hospital) => normalizeMedicineProduct(hospital.__medicamento || hospital.__principioAtivo)).filter(Boolean)).length;
-    if (medicineCountInOS > 1) {
-      validations.push(validation('Múltiplos medicamentos na mesma OS', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Há múltiplos medicamentos na mesma OS; CodBarra será obrigatório para a associação final.'));
-    }
+    control.__unidadeAvaliada = evaluatedHospitalUnit;
+    control.__destinationOk = false;
+    control.__eligibleForOptimization = false;
 
     if (!isOptimization) {
       control.__status = 'Fora do filtro de otimização';
@@ -310,9 +310,26 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       control.__remaining = 0;
       continue;
     }
-    if (!destinationOk) {
-      validations.push(validation('Unidade de Destino incompatível', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Unidade de Destino não contém o hospital informado; alerta não bloqueante. A associação continuará por OS Normalizada + medicamento + CodBarra.'));
+
+    if (!canApplyOptimizations) {
+      markOptimizationUnitUnknown(control, validations);
+      continue;
     }
+
+    const destinationOk = optimizationDestinationCompatible(control.__unidadeDestino, evaluatedHospitalUnit);
+    control.__destinationOk = destinationOk;
+    control.__eligibleForOptimization = destinationOk;
+    if (!destinationOk) {
+      markOptimizationDestinationIneligible(control, validations);
+      continue;
+    }
+
+    const sameOS = usableHospitalRows.filter((hospital) => hospital.__osNormalizada && hospital.__osNormalizada === control.__osNormalizada);
+    const medicineCountInOS = unique(sameOS.map((hospital) => normalizeMedicineProduct(hospital.__medicamento || hospital.__principioAtivo)).filter(Boolean)).length;
+    if (medicineCountInOS > 1) {
+      validations.push(validation('Múltiplos medicamentos na mesma OS', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Há múltiplos medicamentos na mesma OS; CodBarra será obrigatório para a associação final.'));
+    }
+
     if (!control.__osNormalizada) {
       markOptimizationNotUsed(control, validations, 'OS ausente ou inválida no controle; não é permitido associar sem OS Normalizada.');
       continue;
@@ -446,18 +463,18 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       validations.push(validation('Quantidade otimizada não utilizada', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Sobra de ${control.__remaining} após otimização pela chave ${control.__key}.`));
     }
   }
-  optimizationDiagnostics.splice(0, optimizationDiagnostics.length, ...buildOptimizationDiagnostics(controlRows, usableHospitalRows, hospitalName));
+  optimizationDiagnostics.splice(0, optimizationDiagnostics.length, ...buildOptimizationDiagnostics(controlRows, usableHospitalRows, evaluatedHospitalUnit));
   return associations;
 }
 
 
-function buildOptimizationDiagnostics(controlRows, hospitalRows, hospitalName) {
+function buildOptimizationDiagnostics(controlRows, hospitalRows, evaluatedHospitalUnit) {
   return controlRows
     .filter((control) => normalizeText(control.__motivo).includes('OTIMIZA'))
-    .map((control) => optimizationDiagnosticRecord(control, hospitalRows, hospitalName));
+    .map((control) => optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUnit));
 }
 
-function optimizationDiagnosticRecord(control, hospitalRows, hospitalName) {
+function optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUnit) {
   const sameOS = hospitalRows.filter((hospital) => hospital.__osNormalizada && hospital.__osNormalizada === control.__osNormalizada);
   const controlDateParsed = parseDate(control.__data);
   const hasControlDateText = String(control.__data ?? '').trim() !== '';
@@ -467,7 +484,7 @@ function optimizationDiagnosticRecord(control, hospitalRows, hospitalName) {
   const candidateResult = findHospitalCandidatesForControl(control, hospitalRows);
   const compatible = candidateResult.candidates.length ? candidateResult.candidates : sameOSCompatible;
   const barcodeCandidates = unique(compatible.map((hospital) => hospital.__codBarra).filter(Boolean));
-  const destinationOk = destinationSeemsCompatible(control.__unidadeDestino, hospitalName);
+  const destinationOk = typeof control.__destinationOk === 'boolean' ? control.__destinationOk : optimizationDestinationCompatible(control.__unidadeDestino, evaluatedHospitalUnit);
   const dateCompatible = !sameOS.length || !hasControlDateText || !controlDateParsed || dateCompatibleRows.length > 0 || candidateResult.candidates.length > 0;
   const medicineCompatibleInOS = sameOS.some((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
   const medicineCompatibleFound = medicineCompatibleInOS || candidateResult.candidates.length > 0;
@@ -481,13 +498,16 @@ function optimizationDiagnosticRecord(control, hospitalRows, hospitalName) {
     'Data controle': control.__data,
     'Unidade origem': control.__unidadeOrigem,
     'Unidade destino': control.__unidadeDestino,
+    'Unidade avaliada': evaluatedHospitalUnit || '',
+    'Unidade de Destino da otimização': control.__unidadeDestino,
     'Medicamento controle': control.__medicamento,
     'Medicamento base controle': control.__medicamentoBase,
     'Quantidade controle': control.__available ?? control.__qtde ?? '',
     'Lote controle': control.__lote,
     'Validade controle': control.__validade,
-    'Hospital informado na tela': hospitalName || '(não informado)',
+    'Hospital informado na tela': evaluatedHospitalUnit || '(não identificado)',
     'Destino compatível': destinationOk ? 'SIM' : 'NÃO',
+    'Elegível para otimização': control.__eligibleForOptimization ? 'SIM' : 'NÃO',
     'Encontrou OS no hospital': sameOS.length ? 'SIM' : 'NÃO',
     'Quantidade de linhas do hospital com a mesma OS': sameOS.length,
     'Datas encontradas no hospital para essa OS': unique(sameOS.map((hospital) => formatDate(hospital.__data)).filter(Boolean)).join('; '),
@@ -499,11 +519,14 @@ function optimizationDiagnosticRecord(control, hospitalRows, hospitalName) {
     'CodBarra candidato encontrado': describeBarcodeCandidates(compatible),
     'Quantidade de CodBarra candidatos': barcodeCandidates.length,
     'Status final da linha': status,
-    'Motivo final exato': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed }),
+    'Motivo final exato': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed, evaluatedHospitalUnit }),
+    'Motivo final': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed, evaluatedHospitalUnit }),
   };
 }
 
 function diagnosticStatus(control) {
+  if (control.__status === 'Não elegível - destino diferente') return 'NÃO ELEGÍVEL - DESTINO DIFERENTE';
+  if (control.__status === 'Não elegível - unidade avaliada não identificada') return 'NÃO ELEGÍVEL - UNIDADE AVALIADA NÃO IDENTIFICADA';
   if (control.__status === 'Consumido') return 'CONSUMIDA';
   if (control.__status === 'Parcialmente consumido') return 'PARCIALMENTE CONSUMIDA';
   if (control.__status === 'Associação recusada') return 'RECUSADA';
@@ -513,7 +536,8 @@ function diagnosticStatus(control) {
 function diagnosticFinalReason(control, context) {
   if (control.__status === 'Consumido') return `Consumida pela chave final ${control.__key}.`;
   if (control.__status === 'Parcialmente consumido') return `Parcialmente consumida pela chave final ${control.__key}; saldo restante ${control.__remaining}.`;
-  if (!context.destinationOk && (control.__usedQuantity ?? 0) > 0) return `Unidade de Destino incompatível gerou alerta, mas não bloqueou; ${control.__observacao}`;
+  if (!context.evaluatedHospitalUnit) return 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.';
+  if (!context.destinationOk) return 'Unidade de Destino da otimização não corresponde à unidade avaliada.';
   if (!Number.isFinite(control.__available) || control.__available <= 0) return validationDetails(control, 'quantidade inválida');
   if (!control.__osNormalizada) return 'OS ausente ou inválida no controle; não é permitido associar sem OS Normalizada.';
   if (!context.sameOS.length) return validationDetails(control, 'OS não encontrada no hospital');
@@ -602,8 +626,8 @@ function destinationCompatibleWithHospital(control, hospital) {
     .map(normalizeText)
     .filter(Boolean);
 
-  if (!hospitalNames.length) return true;
-  return hospitalNames.some((hospitalName) => destinationSeemsCompatible(destination, hospitalName));
+  if (!hospitalNames.length) return false;
+  return hospitalNames.some((hospitalName) => optimizationDestinationCompatible(destination, hospitalName));
 }
 
 function findHospitalCandidatesForControl(control, hospitalRows) {
@@ -665,16 +689,81 @@ function findHospitalCandidatesForControl(control, hospitalRows) {
 }
 
 function destinationSeemsCompatible(destination, hospitalName) {
-  const hospital = normalizeText(hospitalName);
-  if (!hospital) return true;
-  const dest = normalizeText(destination);
-  if (!dest) return false;
-  return dest.includes(hospital) || hospital.includes(dest);
+  return optimizationDestinationCompatible(destination, hospitalName);
+}
+
+function optimizationDestinationCompatible(destination, evaluatedHospitalUnit) {
+  const hospital = normalizeHospitalUnitForComparison(evaluatedHospitalUnit);
+  const dest = normalizeHospitalUnitForComparison(destination);
+  if (!hospital || !dest) return false;
+  if (dest === hospital || dest.includes(hospital) || hospital.includes(dest)) return true;
+
+  const hospitalTokens = significantDestinationTokens(hospital);
+  const destinationTokens = significantDestinationTokens(dest);
+  if (!hospitalTokens.length || !destinationTokens.length) return false;
+  const overlap = destinationTokens.filter((token) => hospitalTokens.includes(token));
+  return overlap.length >= Math.min(2, hospitalTokens.length, destinationTokens.length);
+}
+
+function normalizeHospitalUnitForComparison(value) {
+  return normalizeText(value)
+    .replace(/\bS\s*A\b/g, ' ')
+    .replace(/\bS\s*\/\s*A\b/g, ' ')
+    .replace(/\b(HOSPITAL|UNIDADE|REDE|AMERICAS|AMERICA|LTDA|EIRELI)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function resolveEvaluatedHospitalUnit(hospitalRows, hospitalName, validations) {
+  const override = String(hospitalName ?? '').trim();
+  if (override) return override;
+
+  const counts = new Map();
+  for (const hospital of hospitalRows) {
+    const value = String(hospital.__cliente || hospital.__hospital || hospital.__unidade || hospital.__nomeHospital || '').trim();
+    const normalized = normalizeText(value);
+    if (!normalized) continue;
+    const current = counts.get(normalized) ?? { value, count: 0 };
+    current.count += 1;
+    counts.set(normalized, current);
+  }
+
+  const inferred = [...counts.values()].sort((a, b) => b.count - a.count)[0]?.value ?? '';
+  if (inferred) return inferred;
+
+  if (!validations.some((item) => item.Mensagem === 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.')) {
+    validations.push({ Tipo: 'Filtro de otimização', Severidade: 'BLOQUEIO', Aba: 'HOSPITAL_ORIGINAL', Linha: 'todas', OS_Normalizada: '', CodBarra: '', Mensagem: 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.' });
+  }
+  return '';
 }
 
 function significantDestinationTokens(value) {
   const ignored = new Set(['HOSPITAL', 'UNIDADE', 'CENTRO', 'MEDICO', 'MEDICA', 'SAO', 'SANTO', 'SANTA', 'DE', 'DA', 'DO', 'DAS', 'DOS', 'E']);
   return normalizeText(value).split(' ').filter((token) => token.length >= 4 && !ignored.has(token));
+}
+
+function markOptimizationDestinationIneligible(control, validations) {
+  const message = 'Unidade de Destino da otimização não corresponde à unidade avaliada.';
+  control.__status = 'Não elegível - destino diferente';
+  control.__remaining = 0;
+  control.__codBarraProdutoHospital = '';
+  control.__key = '';
+  control.__tipoMatch = '';
+  control.__confianca = '';
+  control.__observacao = message;
+  validations.push(validation('Unidade de Destino incompatível', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, message));
+}
+
+function markOptimizationUnitUnknown(control, validations) {
+  const message = 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.';
+  control.__status = 'Não elegível - unidade avaliada não identificada';
+  control.__remaining = 0;
+  control.__codBarraProdutoHospital = '';
+  control.__key = '';
+  control.__tipoMatch = '';
+  control.__confianca = '';
+  control.__observacao = message;
+  validations.push(validation('Filtro de otimização', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, message));
 }
 
 function unusedOptimizationReason(control, hospitalRows) {
@@ -1043,6 +1132,7 @@ function validation(type, severity, sheet, line, row, message) {
     Lote: row.__lote ?? '',
     Quantidade: row.__available ?? row.__qtde ?? '',
     'Unidade destino': row.__unidadeDestino ?? '',
+    'Unidade avaliada': row.__unidadeAvaliada ?? '',
     'Encontrou OS no hospital': row.__validationFoundOS ?? '',
     'Medicamento Hospital candidato coluna I': row.__validationMedicamentoHospitalCandidato ?? '',
     'Medicamento Alternativo candidato coluna O': row.__validationMedicamentoAlternativoCandidato ?? '',
