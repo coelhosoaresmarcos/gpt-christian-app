@@ -438,6 +438,85 @@ assert.equal(multipleBarcodeDiagnosticRows[0]['Status final da linha'], 'RECUSAD
 assert.ok(multipleBarcodeDiagnosticRows[0]['Motivo final exato'].includes('7896400') && multipleBarcodeDiagnosticRows[0]['Motivo final exato'].includes('7896401'), 'diagnóstico lista quais CodBarra causaram a recusa');
 
 
+
+
+const invalidDateDiagnostics = [];
+const invalidDateValidations = [];
+associateRows(
+  [hospital({ __rowId: 67, __os: '7777777', __codBarra: '7896700', __qtde: 10, __medicamento: 'ONTAX', __principioAtivo: 'ONTAX', __data: '02/06/2026' })],
+  [control({ __rowId: 68, __os: '7777777', __qtde: 5, __medicamento: 'ONTAX - 300 mg', __data: '31/022026' })],
+  invalidDateValidations,
+  'Hospital Teste',
+  invalidDateDiagnostics,
+);
+assert.ok(invalidDateValidations.some((item) => item.Mensagem === 'Data do controle inválida ou incompatível; otimização não aplicada.'), 'VALIDACAO bloqueia data de controle inválida');
+assert.equal(invalidDateDiagnostics[0]['Motivo final exato'], 'Data do controle inválida ou incompatível; otimização não aplicada.', 'DIAGNOSTICO_OTIMIZACOES registra data inválida sem autorizar match');
+
+const pitangueirasHospitalRows = [
+  hospital({
+    __rowId: 90,
+    __cliente: 'CENTRO MEDICO PITANGUEIRAS',
+    __paciente: 'KELLY CRISTINE SILVA DE OLIVEIRA',
+    __data: '02/06/2026',
+    __os: '1316354',
+    __medicamento: 'ONTAX',
+    __medicamentoColunaI: 'ONTAX',
+    __principioAtivo: 'ONTAX',
+    __codBarra: '7896094202818',
+    __qtde: 140.8,
+  }),
+];
+const pitangueirasControlRows = [
+  control({
+    __rowId: 32,
+    __os: '13136658',
+    __data: '20/052026',
+    __unidadeOrigem: 'ANA COSTA',
+    __unidadeDestino: 'CENTRO MEDICO PITANGUEIRAS',
+    __paciente: 'KELLY CRISTIE SILVA DE OLIVEIRA',
+    __medicamento: 'ONTAX - 300 mg',
+    __qtde: 30,
+    __lote: '25I0960',
+  }),
+  control({
+    __rowId: 91,
+    __os: '13163540',
+    __data: '02/06/2026',
+    __unidadeDestino: 'CENTRO MEDICO PITANGUEIRAS',
+    __paciente: 'KELLY CRISTINE SILVA DE OLIVEIRA',
+    __medicamento: 'ONTAX - 300 mg',
+    __qtde: 140,
+  }),
+];
+const pitangueirasValidations = [];
+const pitangueirasDiagnostics = [];
+const pitangueirasAssociations = associateRows(pitangueirasHospitalRows, pitangueirasControlRows, pitangueirasValidations, 'CENTRO MEDICO PITANGUEIRAS', pitangueirasDiagnostics);
+const pitangueirasSummary = summarizeAssociations(pitangueirasAssociations).get(90);
+const pitangueirasDownloadRecord = downloadRecord(pitangueirasHospitalRows[0], pitangueirasSummary);
+assert.equal(pitangueirasControlRows[0].__osNormalizada, '1313665', 'controle malformado mantém OS normalizada da linha 32');
+assert.equal(pitangueirasControlRows[0].__status, 'Não utilizado', 'controle com 20/052026 interpretado como 20/05/2026 não associa com hospital de 02/06/2026');
+assert.equal(pitangueirasControlRows[1].__tipoMatch, 'MATCH FORTE', 'controle correto do ONTAX associa por MATCH FORTE');
+assert.equal(pitangueirasDownloadRecord['Qtde Prescrita'], 140.8, 'RELATORIO mantém quantidade prescrita de ONTAX');
+assert.equal(pitangueirasDownloadRecord['Qtde Otimizada'], 140, 'RELATORIO otimiza somente os 140 mg do MATCH FORTE');
+assert.equal(Math.round(pitangueirasDownloadRecord['Qtde Baixa'] * 10) / 10, 0.8, 'RELATORIO deixa 0,8 mg para baixa');
+assert.equal(pitangueirasDownloadRecord['Status Otimização'], 'Com otimização', 'RELATORIO mantém status Com otimização para uso parcial');
+assert.ok(!pitangueirasAssociations.some((item) => item.controlRowId === 32), 'linha de 30 mg com data 20/052026 não é consumida');
+assert.ok(pitangueirasValidations.some((item) => item.Mensagem === 'Data do controle não coincide com dia/mês da data do hospital.'), 'VALIDACAO registra data malformada interpretada como dia/mês incompatível');
+assert.ok(pitangueirasDiagnostics.some((item) => item['Linha do controle'] === 32 && item['Motivo final exato'] === 'Data do controle não coincide com dia/mês da data do hospital.'), 'DIAGNOSTICO_OTIMIZACOES registra incompatibilidade da data 20/052026');
+
+const priorityHospitalRows = [
+  hospital({ __rowId: 92, __os: '7000000', __codBarra: '7896094202818', __qtde: 140, __cliente: 'CENTRO MEDICO PITANGUEIRAS', __paciente: 'KELLY CRISTINE SILVA DE OLIVEIRA', __data: '02/06/2026', __medicamento: 'ONTAX', __medicamentoColunaI: 'ONTAX', __principioAtivo: 'ONTAX' }),
+];
+const priorityControlRows = [
+  control({ __rowId: 10, __os: '9999999', __data: '02/06/2026', __unidadeDestino: 'CENTRO MEDICO PITANGUEIRAS', __paciente: 'KELLY CRISTINE SILVA DE OLIVEIRA', __medicamento: 'ONTAX - 300 mg', __qtde: 30 }),
+  control({ __rowId: 99, __os: '7000000', __data: '02/06/2026', __unidadeDestino: 'CENTRO MEDICO PITANGUEIRAS', __paciente: 'KELLY CRISTINE SILVA DE OLIVEIRA', __medicamento: 'ONTAX - 300 mg', __qtde: 140 }),
+];
+const priorityAssociations = associateRows(priorityHospitalRows, priorityControlRows, [], 'CENTRO MEDICO PITANGUEIRAS');
+assert.equal(priorityControlRows[0].__tipoMatch, 'MATCH MÉDIO AUDITADO', 'controle médio válido fica disponível para a mesma chave');
+assert.equal(priorityControlRows[1].__tipoMatch, 'MATCH FORTE', 'controle forte válido fica disponível para a mesma chave');
+assert.equal(priorityAssociations[0].controlRowId, 99, 'MATCH FORTE consome antes do MATCH MÉDIO AUDITADO mesmo quando aparece depois na planilha');
+assert.ok(!priorityAssociations.some((item) => item.controlRowId === 10), 'MATCH MÉDIO AUDITADO não consome antes do MATCH FORTE para a mesma chave');
+
 const noOptimizationRecord = downloadRecord(hospital({ __rowId: 8, __os: '7654321', __codBarra: '7896000', __qtde: 10 }), undefined);
 assert.equal(noOptimizationRecord['Origem da Otimização'], 'Sem otimização', 'RELATORIO mantém origem Sem otimização sem associação');
 assert.equal(noOptimizationRecord['Lote Otimização'], 'Sem otimização', 'RELATORIO mantém lote Sem otimização sem associação');

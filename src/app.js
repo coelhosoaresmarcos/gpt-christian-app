@@ -338,6 +338,11 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       markOptimizationNotUsed(control, validations, validationDetails(control, 'quantidade inválida'));
       continue;
     }
+    if (!parseDate(control.__data)) {
+      markOptimizationNotUsed(control, validations, 'Data do controle inválida ou incompatível; otimização não aplicada.');
+      continue;
+    }
+
     const candidateResult = findHospitalCandidatesForControl(control, usableHospitalRows);
     const compatible = candidateResult.candidates;
 
@@ -351,10 +356,6 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
         validations.push(validation('Otimização sem correspondência segura', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, candidateResult.reason));
       }
       continue;
-    }
-
-    if (!String(control.__data ?? '').trim() || !parseDate(control.__data)) {
-      validations.push(validation('Data do controle vazia ou inválida', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Data do controle vazia ou inválida; alerta não bloqueante. A associação continuará por OS Normalizada + medicamento + CodBarra.'));
     }
 
     const possibleKeys = unique(compatible.map((hospital) => hospital.__key).filter(Boolean));
@@ -411,7 +412,9 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
 
   for (const hospital of usableHospitalRows) {
     let remainingPrescription = Math.max(0, hospital.__qtde);
-    const controls = (controlsByKey.get(hospital.__key) ?? []).filter((control) => control.__remaining > 0 && medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital) && sameDayAndMonth(control.__data, hospital.__data));
+    const controls = (controlsByKey.get(hospital.__key) ?? [])
+      .filter((control) => control.__remaining > 0 && medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital) && sameDayAndMonth(control.__data, hospital.__data))
+      .sort((a, b) => compareOptimizationPriority(a, b, hospital));
     let optimizedQuantity = 0;
     const availableBefore = controls.reduce((sum, control) => sum + control.__remaining, 0);
 
@@ -485,7 +488,7 @@ function optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUn
   const compatible = candidateResult.candidates.length ? candidateResult.candidates : sameOSCompatible;
   const barcodeCandidates = unique(compatible.map((hospital) => hospital.__codBarra).filter(Boolean));
   const destinationOk = typeof control.__destinationOk === 'boolean' ? control.__destinationOk : optimizationDestinationCompatible(control.__unidadeDestino, evaluatedHospitalUnit);
-  const dateCompatible = !sameOS.length || !hasControlDateText || !controlDateParsed || dateCompatibleRows.length > 0 || candidateResult.candidates.length > 0;
+  const dateCompatible = Boolean(hasControlDateText && controlDateParsed && (dateCompatibleRows.length > 0 || candidateResult.candidates.length > 0));
   const medicineCompatibleInOS = sameOS.some((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
   const medicineCompatibleFound = medicineCompatibleInOS || candidateResult.candidates.length > 0;
   const status = diagnosticStatus(control);
@@ -540,6 +543,8 @@ function diagnosticFinalReason(control, context) {
   if (!context.destinationOk) return 'Unidade de Destino da otimização não corresponde à unidade avaliada.';
   if (!Number.isFinite(control.__available) || control.__available <= 0) return validationDetails(control, 'quantidade inválida');
   if (!control.__osNormalizada) return 'OS ausente ou inválida no controle; não é permitido associar sem OS Normalizada.';
+  if (!context.hasControlDateText || !context.controlDateParsed) return 'Data do controle inválida ou incompatível; otimização não aplicada.';
+  if (!context.dateCompatible && control.__observacao === 'Data do controle não coincide com dia/mês da data do hospital.') return control.__observacao;
   if (!context.sameOS.length) return validationDetails(control, 'OS não encontrada no hospital');
   if (!context.dateCompatible && context.medicineCompatibleInOS) return 'OS encontrada, medicamento compatível, mas data do controle não coincide com dia/mês da data do hospital.';
   if (!context.dateCompatible) return 'OS encontrada, mas data do controle não coincide com dia/mês da data do hospital.';
@@ -547,7 +552,6 @@ function diagnosticFinalReason(control, context) {
   if (!context.barcodeCandidates.length) return 'Medicamento compatível encontrado na OS, mas sem CodBarra preenchido no hospital para criar a chave final.';
   if (context.barcodeCandidates.length > 1) return `Múltiplos CodBarra possíveis para mesma OS e Medicamento Base: ${describeBarcodeCandidates(context.sameOS.filter((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital)))}.`;
   if (control.__codBarra && control.__codBarra !== context.barcodeCandidates[0]) return 'CodBarra do controle diverge do CodBarra compatível identificado no hospital.';
-  if (!context.hasControlDateText || !context.controlDateParsed) return `Data do controle vazia ou inválida gerou alerta não bloqueante; ${control.__observacao || 'associação tentou seguir por OS + medicamento + CodBarra.'}`;
   return control.__observacao || 'Otimização não consumida após a avaliação por OS Normalizada + CodBarra.';
 }
 
@@ -651,11 +655,13 @@ function findHospitalCandidatesForControl(control, hospitalRows) {
     };
   }
 
-  const patientDateMedicineCandidates = hospitalRows.filter((hospital) =>
-    sameDayAndMonth(control.__data, hospital.__data) &&
+  const patientMedicineDestinationCandidates = hospitalRows.filter((hospital) =>
     patientCompatible(control.__paciente, hospital.__paciente) &&
     medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital) &&
     destinationCompatibleWithHospital(control, hospital)
+  );
+  const patientDateMedicineCandidates = patientMedicineDestinationCandidates.filter((hospital) =>
+    sameDayAndMonth(control.__data, hospital.__data)
   );
 
   if (patientDateMedicineCandidates.length) {
@@ -675,6 +681,8 @@ function findHospitalCandidatesForControl(control, hospitalRows) {
     reason = 'OS encontrada, medicamento compatível, mas data do controle não coincide com dia/mês da data do hospital.';
   } else if (sameOS.length && !dateCompatibleRows.length) {
     reason = 'OS encontrada, mas data do controle não coincide com dia/mês da data do hospital.';
+  } else if (!sameOS.length && patientMedicineDestinationCandidates.length) {
+    reason = 'Data do controle não coincide com dia/mês da data do hospital.';
   } else if (sameOS.length && !medicineCompatibleInOS) {
     reason = 'OS encontrada, mas Medicamento Base do controle não corresponde a Medicamento Hospital, Medicamento Alternativo ou PrincipioAtivo.';
   }
@@ -1228,6 +1236,37 @@ function isExcludedItem(medicine) {
   return EXCLUDED_ITEMS.some((item) => normalizedMedicine.includes(normalizeText(item)) || normalizeText(item).includes(normalizedMedicine));
 }
 
+function compareOptimizationPriority(a, b, hospital = null) {
+  const matchComparison = optimizationMatchRank(a) - optimizationMatchRank(b);
+  if (matchComparison !== 0) return matchComparison;
+
+  const confidenceComparison = optimizationConfidenceRank(a) - optimizationConfidenceRank(b);
+  if (confidenceComparison !== 0) return confidenceComparison;
+
+  if (hospital) {
+    const dateComparison = Boolean(sameDayAndMonth(b.__data, hospital.__data)) - Boolean(sameDayAndMonth(a.__data, hospital.__data));
+    if (dateComparison !== 0) return dateComparison;
+
+    const osComparison = Boolean(b.__osNormalizada && b.__osNormalizada === hospital.__osNormalizada) - Boolean(a.__osNormalizada && a.__osNormalizada === hospital.__osNormalizada);
+    if (osComparison !== 0) return osComparison;
+  }
+
+  return (a.__rowId ?? Number.MAX_SAFE_INTEGER) - (b.__rowId ?? Number.MAX_SAFE_INTEGER);
+}
+
+function optimizationMatchRank(control) {
+  if (control.__tipoMatch === 'MATCH FORTE') return 0;
+  if (control.__tipoMatch === 'MATCH MÉDIO AUDITADO') return 1;
+  return 2;
+}
+
+function optimizationConfidenceRank(control) {
+  if (control.__confianca === 'Alta') return 0;
+  if (control.__confianca === 'Média') return 1;
+  return 2;
+}
+
+
 function buildKey(os, barcode) {
   return os && barcode ? `${os}|${barcode}` : '';
 }
@@ -1240,26 +1279,41 @@ function toNumber(value) {
 }
 
 function parseDate(value) {
-  if (value instanceof Date) return value;
-  if (typeof value === 'number') return new Date(Math.round((value - 25569) * 86400 * 1000));
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'number') {
+    const parsedNumber = new Date(Math.round((value - 25569) * 86400 * 1000));
+    return Number.isNaN(parsedNumber.getTime()) ? null : parsedNumber;
+  }
   const text = String(value ?? '').trim();
-  const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-  if (br) return new Date(Number(br[3].padStart(4, '20')), Number(br[2]) - 1, Number(br[1]));
+  const br = text.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4})|(\d{4}))$/);
+  if (br) return buildStrictDate(Number(br[1]), Number(br[2]), normalizeDateYear(br[3] || br[4]));
   const parsed = new Date(text);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeDateYear(yearText) {
+  if (String(yearText).length === 2) return 2000 + Number(yearText);
+  return Number(yearText);
+}
+
+function buildStrictDate(day, month, year) {
+  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
 }
 
 function sameDayAndMonth(a, b) {
   const first = parseDate(a);
   const second = parseDate(b);
-  if (!first || !second) return true;
+  if (!first || !second) return false;
   return first.getDate() === second.getDate() && first.getMonth() === second.getMonth();
 }
 
 function sameYear(a, b) {
   const first = parseDate(a);
   const second = parseDate(b);
-  if (!first || !second) return true;
+  if (!first || !second) return false;
   return first.getFullYear() === second.getFullYear();
 }
 
