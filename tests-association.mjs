@@ -523,4 +523,67 @@ assert.equal(noOptimizationRecord['Lote Otimização'], 'Sem otimização', 'REL
 assert.equal(noOptimizationRecord['Status Otimização'], 'Sem otimização', 'RELATORIO mantém status Sem otimização sem associação');
 assert.ok(mandatoryValidations.some((item) => item.Tipo === 'Divergência de lote como alerta não bloqueante'), 'lote diferente gera alerta não bloqueante');
 
+const gcibSantaHelenaDiagnostics = [];
+const gcibSantaHelenaValidations = [];
+const gcibSantaHelenaHospitalRows = [
+  hospital({
+    __rowId: 134,
+    __os: '1317888',
+    __codBarra: '7896676430035',
+    __qtde: 200,
+    __cliente: 'HOSPITAL SANTA HELENA',
+    __medicamento: 'GCIB',
+    __medicamentoColunaI: 'GCIB',
+    __medicamentoAlternativo: 'GCIB',
+    __principioAtivo: 'GENCITABINA',
+  }),
+  hospital({
+    __rowId: 135,
+    __os: '1317888',
+    __codBarra: '7896014681020',
+    __qtde: 200,
+    __cliente: 'HOSPITAL SANTA HELENA',
+    __medicamento: 'C-PLATIN',
+    __medicamentoColunaI: 'C-PLATIN',
+    __medicamentoAlternativo: 'C-PLATIN',
+    __principioAtivo: 'CISPLATINA',
+  }),
+];
+const gcibSantaHelenaControlRows = [
+  control({
+    __rowId: 136,
+    __os: '1317888',
+    __qtde: 200,
+    __medicamento: 'GCIB - 1000 mg',
+    __unidadeDestino: 'HOSPITAL SANTA HELENA',
+  }),
+];
+const gcibSantaHelenaAssociations = associateRows(
+  gcibSantaHelenaHospitalRows,
+  gcibSantaHelenaControlRows,
+  gcibSantaHelenaValidations,
+  'HOSPITAL SANTA HELENA',
+  gcibSantaHelenaDiagnostics,
+);
+assert.equal(gcibSantaHelenaControlRows[0].__medicamentoBase, 'GCIB', 'linha 136 GCIB cria medicamento base do controle antes do hífen');
+assert.equal(gcibSantaHelenaControlRows[0].__codBarraProdutoHospital, '7896676430035', 'linha 136 GCIB identifica apenas o CodBarra do GCIB no hospital');
+assert.equal(gcibSantaHelenaControlRows[0].__key, '1317888|7896676430035', 'linha 136 GCIB monta chave final OS Normalizada + CodBarra correta');
+assert.equal(gcibSantaHelenaDiagnostics[0]['Quantidade de CodBarra candidatos'], 1, 'linha 136 GCIB tem somente um CodBarra candidato');
+assert.ok(gcibSantaHelenaDiagnostics[0]['CodBarra candidato encontrado'].includes('7896676430035'), 'diagnóstico GCIB lista o CodBarra do GCIB');
+assert.ok(!gcibSantaHelenaDiagnostics[0]['CodBarra candidato encontrado'].includes('7896014681020'), 'diagnóstico GCIB não lista C-PLATIN como candidato');
+assert.ok(gcibSantaHelenaAssociations.some((item) => item.hospitalRowId === 134 && item.controlRowId === 136), 'linha 136 GCIB é consumida pela prescrição GCIB disponível no hospital');
+assert.equal(gcibSantaHelenaAssociations[0].codBarraHospital, '7896676430035', 'RELATORIO/associação GCIB usa CodBarra Produto Hospital correto');
+assert.ok(!gcibSantaHelenaValidations.some((item) => item.Tipo === 'Múltiplos CodBarra possíveis'), 'linha 136 GCIB não é recusada por múltiplos CodBarra quando existe C-PLATIN na mesma OS');
+
+const hyphenatedMedicineDiagnostics = [];
+associateRows(
+  [hospital({ __rowId: 137, __os: '1317889', __codBarra: '7896014681020', __qtde: 10, __medicamento: 'C-PLATIN', __medicamentoColunaI: 'C-PLATIN', __medicamentoAlternativo: 'C-PLATIN', __principioAtivo: 'CISPLATINA' })],
+  [control({ __rowId: 138, __os: '1317889', __qtde: 1, __medicamento: 'GCIB - 1000 mg', __unidadeDestino: 'HOSPITAL SANTA HELENA' })],
+  [],
+  'HOSPITAL SANTA HELENA',
+  hyphenatedMedicineDiagnostics,
+);
+assert.equal(hyphenatedMedicineDiagnostics[0]['Medicamento compatível'], 'NÃO', 'C-PLATIN não é compatível com GCIB e não é reduzido a uma letra candidata');
+assert.equal(hyphenatedMedicineDiagnostics[0]['Quantidade de CodBarra candidatos'], 0, 'C-PLATIN não gera CodBarra candidato para GCIB');
+
 console.log('association optimization tests passed');

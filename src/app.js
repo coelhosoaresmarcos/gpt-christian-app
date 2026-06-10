@@ -10,6 +10,7 @@ const REQUIRED_SHEETS = [
 
 const MEDICINE_EQUIVALENCE_GROUPS = [
   ['GENLIBBS', 'GENCITABINA', 'GEMCITABINA', 'GEMCITABINE'],
+  ['GCIB', 'GENCITABINA', 'GEMCITABINA', 'GEMCITABINE'],
 ];
 
 
@@ -1045,7 +1046,7 @@ function getByExactHeader(object, candidates) {
 }
 
 function shouldUseHospitalMedicineFallback(value) {
-  const normalized = normalizeMedicineNameForComparison(value);
+  const normalized = normalizeHospitalMedicineName(value);
   return !normalized || normalized === 'MG';
 }
 
@@ -1177,8 +1178,12 @@ function onlyDigits(value) {
 }
 
 function normalizeMedicineBase(value) {
+  return normalizeControlMedicineBase(value);
+}
+
+function normalizeControlMedicineBase(value) {
   const beforeDash = String(value ?? '').split('-')[0];
-  return normalizeMedicineProduct(beforeDash).trim();
+  return removeMedicineConcentration(normalizeMedicineProduct(beforeDash));
 }
 
 function normalizeText(value) {
@@ -1196,7 +1201,7 @@ function normalizeMedicineProduct(value) {
 }
 
 function medicineCompatible(controlMedicine, hospital) {
-  const control = normalizeMedicineNameForComparison(controlMedicine);
+  const control = normalizeControlMedicineBase(controlMedicine);
   if (!control) return false;
   const candidates = [
     hospital.__medicamento,
@@ -1205,12 +1210,15 @@ function medicineCompatible(controlMedicine, hospital) {
     hospital.__medicamentoAlternativo,
     hospital.__principioAtivo,
   ];
-  return candidates.some((candidate) => compatibleNormalizedMedicine(control, normalizeMedicineNameForComparison(candidate)));
+  return candidates.some((candidate) => compatibleNormalizedMedicine(control, normalizeHospitalMedicineName(candidate)));
 }
 
-function normalizeMedicineNameForComparison(value) {
-  const beforeDash = String(value ?? '').split('-')[0];
-  return normalizeMedicineProduct(beforeDash)
+function normalizeHospitalMedicineName(value) {
+  return removeMedicineConcentration(normalizeMedicineProduct(value));
+}
+
+function removeMedicineConcentration(value) {
+  return String(value ?? '')
     .replace(/\b\d+(?:[.,]\d+)?(?:MG|G|MCG|ML|L|UI)\b/g, '')
     .replace(/\b\d+(?:[.,]\d+)?\s*(?:MG|G|MCG|ML|L|UI)\b/g, '')
     .replace(/\s+/g, ' ')
@@ -1221,12 +1229,13 @@ function compatibleNormalizedMedicine(control, candidate) {
   if (!control || !candidate) return false;
   if (control === candidate) return true;
   if (equivalentMedicine(control, candidate)) return true;
+  if (control.length < 4 || candidate.length < 4) return false;
   return candidate.includes(control) || control.includes(candidate);
 }
 
 function equivalentMedicine(control, candidate) {
   return MEDICINE_EQUIVALENCE_GROUPS.some((group) => {
-    const normalizedGroup = group.map(normalizeMedicineNameForComparison);
+    const normalizedGroup = group.map(normalizeHospitalMedicineName);
     return normalizedGroup.includes(control) && normalizedGroup.includes(candidate);
   });
 }
