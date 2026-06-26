@@ -38,11 +38,14 @@
             </label>
           </div>
 
-          <label class="field">
-            <span>Nome do hospital para filtrar Unidade de Destino</span>
-            <input id="hospitalName" placeholder="Ex.: Hospital São Lucas" />
-            <small>Se ficar em branco, o app inferirá a unidade pelo Cliente/Hospital mais frequente; se não identificar, não aplicará otimizações por segurança.</small>
-          </label>
+          <div class="field">
+            <span>Período de análise</span>
+            <div class="date-grid">
+              <label>Data inicial<input id="startDate" type="date" /></label>
+              <label>Data final<input id="endDate" type="date" /></label>
+            </div>
+            <small>Datas inclusivas. Se ficar vazio, todas as datas e hospitais serão analisados.</small>
+          </div>
 
           <button id="processButton" class="primary">Gerar Excel consolidado</button>
           <p id="status" class="status" role="status"></p>

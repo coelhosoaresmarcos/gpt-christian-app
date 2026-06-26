@@ -587,3 +587,29 @@ assert.equal(hyphenatedMedicineDiagnostics[0]['Medicamento compatível'], 'NÃO'
 assert.equal(hyphenatedMedicineDiagnostics[0]['Quantidade de CodBarra candidatos'], 0, 'C-PLATIN não gera CodBarra candidato para GCIB');
 
 console.log('association optimization tests passed');
+
+const multiHospitalValidations = [];
+const multiHospitalDiagnostics = [];
+const multiHospitalRows = [
+  hospital({ __rowId: 201, __data: '05/06/2026', __cliente: 'HOSPITAL ANA COSTA', __os: '1317888', __codBarra: '7896676430035', __qtde: 100, __medicamento: 'GCIB', __medicamentoColunaI: 'GCIB', __principioAtivo: 'GENCITABINA' }),
+  hospital({ __rowId: 202, __data: '05/06/2026', __cliente: 'HOSPITAL SANTA HELENA SAO BERNARDO DO CAMPO', __os: '1317888', __codBarra: '7896676430035', __qtde: 100, __medicamento: 'GCIB', __medicamentoColunaI: 'GCIB', __principioAtivo: 'GENCITABINA' }),
+  hospital({ __rowId: 203, __data: '05/06/2026', __cliente: 'CENTRO MEDICO PITANGUEIRAS', __os: '1317888', __codBarra: '7896676430035', __qtde: 100, __medicamento: 'GCIB', __medicamentoColunaI: 'GCIB', __principioAtivo: 'GENCITABINA' }),
+  hospital({ __rowId: 204, __data: '20/06/2026', __cliente: 'HOSPITAL ANA COSTA', __os: '9999999', __codBarra: '7896676430035', __qtde: 100, __medicamento: 'GCIB', __medicamentoColunaI: 'GCIB', __principioAtivo: 'GENCITABINA' }),
+];
+multiHospitalRows[3].__inPeriod = false;
+const multiControlRows = [
+  control({ __rowId: 205, __data: '05/06/2026', __os: '1317888', __qtde: 10, __medicamento: 'GCIB - 1000 mg', __unidadeDestino: 'ANA COSTA' }),
+  control({ __rowId: 206, __data: '05/06/2026', __os: '1317888', __qtde: 20, __medicamento: 'GCIB - 1000 mg', __unidadeDestino: 'SANTA HELENA' }),
+  control({ __rowId: 207, __data: '05/06/2026', __os: '1317888', __qtde: 30, __medicamento: 'GCIB - 1000 mg', __unidadeDestino: 'CENTRO MEDICO PITANGUEIRAS' }),
+  control({ __rowId: 208, __data: '20/06/2026', __os: '9999999', __qtde: 40, __medicamento: 'GCIB - 1000 mg', __unidadeDestino: 'ANA COSTA', __status: 'Fora do período de análise', __observacao: 'Linha preservada, mas não considerada por estar fora do período selecionado.' }),
+];
+multiControlRows[3].__inPeriod = false;
+multiControlRows[3].__status = 'Fora do período de análise';
+multiControlRows[3].__observacao = 'Linha preservada, mas não considerada por estar fora do período selecionado.';
+const multiAssociations = associateRows(multiHospitalRows, multiControlRows, multiHospitalValidations, { start: new Date(2026, 5, 1), end: new Date(2026, 5, 10), valid: true }, multiHospitalDiagnostics);
+assert.ok(multiAssociations.some((item) => item.hospitalRowId === 201 && item.controlRowId === 205), 'multi-hospital aplica Ana Costa somente em Ana Costa');
+assert.ok(multiAssociations.some((item) => item.hospitalRowId === 202 && item.controlRowId === 206), 'multi-hospital aplica Santa Helena somente em Santa Helena');
+assert.ok(multiAssociations.some((item) => item.hospitalRowId === 203 && item.controlRowId === 207), 'multi-hospital aplica Pitangueiras somente em Pitangueiras');
+assert.equal(new Set(multiAssociations.map((item) => item.internalKey)).size, 3, 'mesmo OS + CodBarra em hospitais diferentes usa chave interna separada');
+assert.ok(!multiAssociations.some((item) => item.hospitalRowId === 204 || item.controlRowId === 208), 'filtro de data limita associações ao período selecionado');
+assert.equal(multiControlRows[3].__status, 'Fora do período de análise', 'controle fora do período é preservado com status específico');

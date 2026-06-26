@@ -24,12 +24,16 @@ const DIAGNOSTIC_COLUMNS = [
   'Unidade destino',
   'Unidade avaliada',
   'Unidade de Destino da otimização',
+  'Unidade Hospitalar Candidata',
+  'Unidade Hospitalar Associada',
+  'Período selecionado',
+  'Linha incluída no período',
+  'Chave Interna Unidade+OS+CodBarra',
   'Medicamento controle',
   'Medicamento base controle',
   'Quantidade controle',
   'Lote controle',
   'Validade controle',
-  'Hospital informado na tela',
   'Destino compatível',
   'Elegível para otimização',
   'Encontrou OS no hospital',
@@ -75,7 +79,8 @@ const hospitalInput = hasDocument ? document.querySelector('#hospitalFile') : nu
 const controlInput = hasDocument ? document.querySelector('#controlFile') : null;
 const hospitalFileName = hasDocument ? document.querySelector('#hospitalFileName') : null;
 const controlFileName = hasDocument ? document.querySelector('#controlFileName') : null;
-const hospitalNameInput = hasDocument ? document.querySelector('#hospitalName') : null;
+const startDateInput = hasDocument ? document.querySelector('#startDate') : null;
+const endDateInput = hasDocument ? document.querySelector('#endDate') : null;
 const processButton = hasDocument ? document.querySelector('#processButton') : null;
 const downloadButton = hasDocument ? document.querySelector('#downloadButton') : null;
 const statusElement = hasDocument ? document.querySelector('#status') : null;
@@ -117,11 +122,12 @@ async function processFiles() {
     const result = await processChristianWorkbook({
       hospitalFile,
       controlFile,
-      hospitalName: hospitalNameInput.value.trim(),
+      periodStart: startDateInput.value,
+      periodEnd: endDateInput.value,
     });
     generatedBlob = result.blob;
     generatedFileName = result.fileName;
-    summaryElement.textContent = `${result.summary.associations} associações, ${result.summary.downloadRows} itens baixáveis e ${result.summary.validationRows} registros de validação.`;
+    summaryElement.textContent = `Período analisado: ${result.summary.periodLabel}. Hospitais identificados: ${result.summary.hospitalUnits}. Linhas hospitalares analisadas: ${result.summary.hospitalRowsIncluded}. Otimizações consideradas: ${result.summary.optimizationsConsidered}. Otimizações aplicadas: ${result.summary.optimizationsApplied}. Otimizações recusadas: ${result.summary.optimizationsRefused}. Itens excluídos: ${result.summary.excludedRows}.`;
     resultCard.classList.remove('hidden');
     setStatus('Arquivo consolidado gerado com sucesso.', 'success');
   } catch (error) {
@@ -141,7 +147,7 @@ function downloadGeneratedFile() {
   URL.revokeObjectURL(url);
 }
 
-async function processChristianWorkbook({ hospitalFile, controlFile, hospitalName }) {
+async function processChristianWorkbook({ hospitalFile, controlFile, periodStart = '', periodEnd = '' }) {
   const hospitalWorkbook = await loadWorkbook(hospitalFile);
   const controlWorkbook = await loadWorkbook(controlFile);
   const hospitalSheet = hospitalWorkbook.worksheets[0];
@@ -152,10 +158,12 @@ async function processChristianWorkbook({ hospitalFile, controlFile, hospitalNam
 
   const validations = [];
   const optimizationDiagnostics = [];
+  const period = normalizeAnalysisPeriod(periodStart, periodEnd);
+  if (!period.valid) throw new Error('A data inicial não pode ser posterior à data final.');
   const hospitalRows = readHospitalRows(hospitalSheet, validations);
   const controlRows = readControlRows(controlSheet, validations);
-  const evaluatedHospitalUnit = resolveEvaluatedHospitalUnit(hospitalRows, hospitalName, validations);
-  const associations = associateRows(hospitalRows, controlRows, validations, evaluatedHospitalUnit, optimizationDiagnostics);
+  applyAnalysisPeriod(hospitalRows, controlRows, period, validations);
+  const associations = associateRows(hospitalRows, controlRows, validations, period, optimizationDiagnostics);
   const outputWorkbook = buildOutputWorkbook(hospitalRows, controlRows, associations, validations, hospitalSheet, optimizationDiagnostics);
   const buffer = await outputWorkbook.xlsx.writeBuffer();
 
@@ -164,10 +172,53 @@ async function processChristianWorkbook({ hospitalFile, controlFile, hospitalNam
     fileName: `christian_consolidado_${new Date().toISOString().slice(0, 10)}.xlsx`,
     summary: {
       associations: associations.length,
-      downloadRows: hospitalRows.filter((row) => !row.__isExcluded).length,
+      downloadRows: hospitalRows.filter((row) => row.__inPeriod && !row.__isExcluded).length,
+      periodLabel: describePeriod(period),
+      hospitalUnits: unique(hospitalRows.map((row) => row.__unidadeHospitalNormalizada).filter(Boolean)).length,
+      hospitalRowsIncluded: hospitalRows.filter((row) => row.__inPeriod).length,
+      optimizationsConsidered: controlRows.filter((row) => normalizeText(row.__motivo).includes('OTIMIZA') && row.__inPeriod).length,
+      optimizationsApplied: controlRows.filter((row) => row.__used).length,
+      optimizationsRefused: controlRows.filter((row) => normalizeText(row.__motivo).includes('OTIMIZA') && row.__inPeriod && !row.__used).length,
+      excludedRows: hospitalRows.filter((row) => row.__inPeriod && row.__isExcluded).length,
       validationRows: validations.length,
     },
   };
+}
+
+function normalizeAnalysisPeriod(start, end) {
+  const startDate = start ? parseDate(`${start}T00:00:00`) : null;
+  const endDate = end ? parseDate(`${end}T00:00:00`) : null;
+  if (startDate) startDate.setHours(0,0,0,0);
+  if (endDate) endDate.setHours(23,59,59,999);
+  return { start: startDate, end: endDate, valid: !(startDate && endDate && startDate > endDate) };
+}
+
+function isWithinAnalysisPeriod(value, period) {
+  const date = parseDate(value);
+  if (!date) return true;
+  if (period?.start && date < period.start) return false;
+  if (period?.end && date > period.end) return false;
+  return true;
+}
+
+function describePeriod(period) {
+  if (period?.start && period?.end) return `${formatDate(period.start)} a ${formatDate(period.end)}`;
+  if (period?.start) return `a partir de ${formatDate(period.start)}`;
+  if (period?.end) return `até ${formatDate(period.end)}`;
+  return 'Todas as datas';
+}
+
+function applyAnalysisPeriod(hospitalRows, controlRows, period, validations) {
+  for (const row of hospitalRows) row.__inPeriod = isWithinAnalysisPeriod(row.__data, period);
+  for (const control of controlRows) {
+    control.__inPeriod = isWithinAnalysisPeriod(control.__data, period);
+    control.__periodLabel = describePeriod(period);
+    if (!control.__inPeriod) {
+      control.__status = 'Fora do período de análise';
+      control.__observacao = 'Linha preservada, mas não considerada por estar fora do período selecionado.';
+      validations.push(validation('Otimização fora do período', 'INFO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, control.__observacao));
+    }
+  }
 }
 
 async function loadWorkbook(file) {
@@ -195,7 +246,10 @@ function readHospitalRows(sheet, validations) {
       ...object,
       __rowId: rowNumber,
       __data: getByCandidates(object, ['Data', 'Dt Atendimento', 'Data Atendimento']) ?? physical(3),
-      __cliente: String(getByCandidates(object, ['Cliente', 'Hospital']) ?? physical(1) ?? ''),
+      __cliente: String(getByCandidates(object, ['Cliente']) ?? physical(1) ?? ''),
+      __hospital: String(getByCandidates(object, ['Hospital']) ?? ''),
+      __unidade: String(getByCandidates(object, ['Unidade']) ?? ''),
+      __nomeHospital: String(getByCandidates(object, ['Nome do Hospital', 'Nome Hospital']) ?? ''),
       __paciente: String(getByCandidates(object, ['Paciente', 'Nome Paciente']) ?? physical(4) ?? ''),
       __os: String(getByCandidates(object, ['OS', 'Ordem de serviço', 'Ordem de Servico', 'Ordem Serviço']) ?? physical(8) ?? ''),
       __medicamento: String(medication ?? ''),
@@ -213,8 +267,14 @@ function readHospitalRows(sheet, validations) {
     hospitalRow.__produtoHospitalNormalizado = normalizeMedicineProduct(hospitalRow.__produtoHospital);
     hospitalRow.__medicamentoAlternativoNormalizado = normalizeMedicineProduct(hospitalRow.__medicamentoAlternativo);
     hospitalRow.__principioAtivoNormalizado = normalizeMedicineProduct(hospitalRow.__principioAtivo);
+    hospitalRow.__unidadeHospital = resolveHospitalUnitForRow(hospitalRow);
+    hospitalRow.__unidadeHospitalNormalizada = normalizeHospitalUnitForComparison(hospitalRow.__unidadeHospital);
     hospitalRow.__key = buildKey(hospitalRow.__osNormalizada, hospitalRow.__codBarra);
+    hospitalRow.__internalKey = buildInternalKey(hospitalRow.__unidadeHospitalNormalizada, hospitalRow.__osNormalizada, hospitalRow.__codBarra);
     hospitalRow.__isExcluded = isExcludedItem(hospitalRow.__medicamento);
+    if (!hospitalRow.__unidadeHospitalNormalizada) {
+      validations.push(validation('Linha hospitalar sem Cliente/Hospital identificável', 'BLOQUEIO', 'HOSPITAL_ORIGINAL', rowNumber, hospitalRow, 'Linha hospitalar sem Cliente/Hospital identificável.'));
+    }
 
     if (hospitalRow.__isExcluded) {
       validations.push(validation('Itens excluídos da avaliação', 'INFO', 'HOSPITAL_ORIGINAL', rowNumber, hospitalRow, `Item excluído: ${hospitalRow.__medicamento}`));
@@ -270,18 +330,23 @@ function readControlRows(sheet, validations) {
   return rows;
 }
 
-function associateRows(hospitalRows, controlRows, validations, hospitalName, optimizationDiagnostics = []) {
+function associateRows(hospitalRows, controlRows, validations, period = null, optimizationDiagnostics = []) {
+  const legacyHospitalName = typeof period === 'string' ? resolveEvaluatedHospitalUnit(hospitalRows, period, validations) : '';
+  period = typeof period === 'string' ? null : period;
   const associations = [];
-  const usableHospitalRows = hospitalRows.filter((row) => !row.__isExcluded);
+  const usableHospitalRows = hospitalRows.filter((row) => row.__inPeriod !== false && !row.__isExcluded);
   const controlsByKey = new Map();
   const keyUsage = new Map();
-  const evaluatedHospitalUnit = resolveEvaluatedHospitalUnit(usableHospitalRows, hospitalName, validations);
-  const canApplyOptimizations = Boolean(evaluatedHospitalUnit);
+  const hospitalUnits = new Set(usableHospitalRows.map((row) => row.__unidadeHospitalNormalizada).filter(Boolean));
 
   for (const hospital of usableHospitalRows) {
     hospital.__osNormalizada = normalizeOS(hospital.__osNormalizada || hospital.__os);
     hospital.__codBarra = normalizeBarcode(hospital.__codBarra);
     hospital.__key = buildKey(hospital.__osNormalizada, hospital.__codBarra);
+    hospital.__unidadeHospital = legacyHospitalName || hospital.__unidadeHospital || resolveHospitalUnitForRow(hospital);
+    hospital.__unidadeHospitalNormalizada = hospital.__unidadeHospitalNormalizada || normalizeHospitalUnitForComparison(hospital.__unidadeHospital);
+    hospital.__internalKey = buildInternalKey(hospital.__unidadeHospitalNormalizada, hospital.__osNormalizada, hospital.__codBarra);
+    if (hospital.__unidadeHospitalNormalizada) hospitalUnits.add(hospital.__unidadeHospitalNormalizada);
     hospital.__medicamentoNormalizado = normalizeMedicineProduct(hospital.__medicamento);
     hospital.__produtoHospitalNormalizado = normalizeMedicineProduct(hospital.__produtoHospital);
     hospital.__medicamentoColunaINormalizado = normalizeMedicineProduct(hospital.__medicamentoColunaI);
@@ -296,14 +361,19 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
     }
   }
 
-  const hospitalKeys = new Set(usableHospitalRows.map((row) => row.__key).filter(Boolean));
+  const hospitalKeys = new Set(usableHospitalRows.map((row) => row.__internalKey).filter(Boolean));
 
   for (const control of controlRows) {
     prepareControlForAssociation(control);
     const isOptimization = normalizeText(control.__motivo).includes('OTIMIZA');
-    control.__unidadeAvaliada = evaluatedHospitalUnit;
+    control.__unidadeAvaliada = legacyHospitalName || '';
     control.__destinationOk = false;
     control.__eligibleForOptimization = false;
+
+    if (control.__inPeriod === false) {
+      control.__remaining = 0;
+      continue;
+    }
 
     if (!isOptimization) {
       control.__status = 'Fora do filtro de otimização';
@@ -312,15 +382,13 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       continue;
     }
 
-    if (!canApplyOptimizations) {
+    if (!hospitalUnits.size) {
       markOptimizationUnitUnknown(control, validations);
       continue;
     }
 
-    const destinationOk = optimizationDestinationCompatible(control.__unidadeDestino, evaluatedHospitalUnit);
-    control.__destinationOk = destinationOk;
-    control.__eligibleForOptimization = destinationOk;
-    if (!destinationOk) {
+    const destinationMatchesFile = [...hospitalUnits].some((unit) => optimizationDestinationCompatible(control.__unidadeDestino, unit));
+    if (!destinationMatchesFile) {
       markOptimizationDestinationIneligible(control, validations);
       continue;
     }
@@ -359,7 +427,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       continue;
     }
 
-    const possibleKeys = unique(compatible.map((hospital) => hospital.__key).filter(Boolean));
+    const possibleKeys = unique(compatible.map((hospital) => hospital.__internalKey).filter(Boolean));
     const possibleBarcodes = unique(compatible.map((hospital) => hospital.__codBarra).filter(Boolean));
     if (!possibleKeys.length) {
       setValidationCandidateContext(control, compatible, 'medicamento compatível sem CodBarra candidato');
@@ -375,7 +443,7 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
     }
 
     const targetKey = possibleKeys[0];
-    const targetHospital = compatible.find((hospital) => hospital.__key === targetKey);
+    const targetHospital = compatible.find((hospital) => hospital.__internalKey === targetKey);
     const identifiedBarcode = targetHospital.__codBarra;
     if (control.__codBarra && control.__codBarra !== identifiedBarcode) {
       setValidationCandidateContext(control, compatible, 'CodBarra do controle diverge do CodBarra candidato');
@@ -389,7 +457,9 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
     }
 
     control.__codBarraProdutoHospital = identifiedBarcode;
-    control.__key = targetKey;
+    control.__key = targetHospital.__key;
+    control.__internalKey = targetKey;
+    control.__unidadeAvaliada = targetHospital.__unidadeHospital;
     control.__tipoMatch = candidateResult.matchType;
     control.__confianca = candidateResult.confidence;
     control.__status = 'Disponível para otimização';
@@ -403,17 +473,17 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       validations.push(validation('Divergência de OS', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `OS divergente entre controle e hospital. Controle: ${control.__osNormalizada}. Hospital: ${targetHospital.__osNormalizada}. Associação realizada por paciente + data + medicamento + CodBarra único.`));
     }
 
-    if (!hospitalKeys.has(control.__key)) {
+    if (!hospitalKeys.has(control.__internalKey)) {
       validations.push(validation('Ausência de CodBarra compatível', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'A chave OS Normalizada + CodBarra identificada não existe entre os itens baixáveis do hospital.'));
       control.__status = 'Associação recusada';
       continue;
     }
-    controlsByKey.set(control.__key, [...(controlsByKey.get(control.__key) ?? []), control]);
+    controlsByKey.set(control.__internalKey, [...(controlsByKey.get(control.__internalKey) ?? []), control]);
   }
 
   for (const hospital of usableHospitalRows) {
     let remainingPrescription = Math.max(0, hospital.__qtde);
-    const controls = (controlsByKey.get(hospital.__key) ?? [])
+    const controls = (controlsByKey.get(hospital.__internalKey) ?? [])
       .filter((control) => control.__remaining > 0 && medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital) && sameDayAndMonth(control.__data, hospital.__data))
       .sort((a, b) => compareOptimizationPriority(a, b, hospital));
     let optimizedQuantity = 0;
@@ -424,12 +494,12 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       const quantityToUse = Math.min(remainingPrescription, control.__remaining);
       if (quantityToUse <= 0) continue;
 
-      const usedKey = keyUsage.get(control.__key);
-      if (usedKey && usedKey !== control.__key) {
+      const usedKey = keyUsage.get(control.__internalKey);
+      if (usedKey && usedKey !== control.__internalKey) {
         validations.push(validation('Possível duplicidade de uso da otimização', 'BLOQUEIO', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, 'Tentativa de aplicar a mesma otimização em mais de um CodBarra diferente.'));
         continue;
       }
-      keyUsage.set(control.__key, control.__key);
+      keyUsage.set(control.__internalKey, control.__internalKey);
 
       control.__remaining -= quantityToUse;
       control.__usedQuantity += quantityToUse;
@@ -467,19 +537,20 @@ function associateRows(hospitalRows, controlRows, validations, hospitalName, opt
       validations.push(validation('Quantidade otimizada não utilizada', 'ALERTA', 'CONTROLE DE MEDICAMENTOS', control.__rowId, control, `Sobra de ${control.__remaining} após otimização pela chave ${control.__key}.`));
     }
   }
-  optimizationDiagnostics.splice(0, optimizationDiagnostics.length, ...buildOptimizationDiagnostics(controlRows, usableHospitalRows, evaluatedHospitalUnit));
+  optimizationDiagnostics.splice(0, optimizationDiagnostics.length, ...buildOptimizationDiagnostics(controlRows, usableHospitalRows, period));
   return associations;
 }
 
 
-function buildOptimizationDiagnostics(controlRows, hospitalRows, evaluatedHospitalUnit) {
+function buildOptimizationDiagnostics(controlRows, hospitalRows, period) {
   return controlRows
     .filter((control) => normalizeText(control.__motivo).includes('OTIMIZA'))
-    .map((control) => optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUnit));
+    .map((control) => optimizationDiagnosticRecord(control, hospitalRows, period));
 }
 
-function optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUnit) {
-  const sameOS = hospitalRows.filter((hospital) => hospital.__osNormalizada && hospital.__osNormalizada === control.__osNormalizada);
+function optimizationDiagnosticRecord(control, hospitalRows, period) {
+  const candidateHospitalRows = hospitalRows.filter((hospital) => destinationCompatibleWithHospital(control, hospital));
+  const sameOS = candidateHospitalRows.filter((hospital) => hospital.__osNormalizada && hospital.__osNormalizada === control.__osNormalizada);
   const controlDateParsed = parseDate(control.__data);
   const hasControlDateText = String(control.__data ?? '').trim() !== '';
   const dateCompatibleRows = sameOS.filter((hospital) => sameDayAndMonth(control.__data, hospital.__data));
@@ -488,7 +559,7 @@ function optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUn
   const candidateResult = findHospitalCandidatesForControl(control, hospitalRows);
   const compatible = candidateResult.candidates.length ? candidateResult.candidates : sameOSCompatible;
   const barcodeCandidates = unique(compatible.map((hospital) => hospital.__codBarra).filter(Boolean));
-  const destinationOk = typeof control.__destinationOk === 'boolean' ? control.__destinationOk : optimizationDestinationCompatible(control.__unidadeDestino, evaluatedHospitalUnit);
+  const destinationOk = typeof control.__destinationOk === 'boolean' ? control.__destinationOk : candidateHospitalRows.length > 0;
   const dateCompatible = Boolean(hasControlDateText && controlDateParsed && (dateCompatibleRows.length > 0 || candidateResult.candidates.length > 0));
   const medicineCompatibleInOS = sameOS.some((hospital) => medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital));
   const medicineCompatibleFound = medicineCompatibleInOS || candidateResult.candidates.length > 0;
@@ -502,14 +573,18 @@ function optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUn
     'Data controle': control.__data,
     'Unidade origem': control.__unidadeOrigem,
     'Unidade destino': control.__unidadeDestino,
-    'Unidade avaliada': evaluatedHospitalUnit || '',
+    'Unidade avaliada': control.__unidadeAvaliada || '',
+    'Unidade Hospitalar Candidata': unique(candidateHospitalRows.map((hospital) => hospital.__unidadeHospital).filter(Boolean)).join('; '),
+    'Unidade Hospitalar Associada': control.__unidadeAvaliada || '',
     'Unidade de Destino da otimização': control.__unidadeDestino,
     'Medicamento controle': control.__medicamento,
     'Medicamento base controle': control.__medicamentoBase,
     'Quantidade controle': control.__available ?? control.__qtde ?? '',
     'Lote controle': control.__lote,
     'Validade controle': control.__validade,
-    'Hospital informado na tela': evaluatedHospitalUnit || '(não identificado)',
+    'Período selecionado': describePeriod(period),
+    'Linha incluída no período': control.__inPeriod === false ? 'NÃO' : 'SIM',
+    'Chave Interna Unidade+OS+CodBarra': control.__internalKey || '',
     'Destino compatível': destinationOk ? 'SIM' : 'NÃO',
     'Elegível para otimização': control.__eligibleForOptimization ? 'SIM' : 'NÃO',
     'Encontrou OS no hospital': sameOS.length ? 'SIM' : 'NÃO',
@@ -523,8 +598,8 @@ function optimizationDiagnosticRecord(control, hospitalRows, evaluatedHospitalUn
     'CodBarra candidato encontrado': describeBarcodeCandidates(compatible),
     'Quantidade de CodBarra candidatos': barcodeCandidates.length,
     'Status final da linha': status,
-    'Motivo final exato': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed, evaluatedHospitalUnit }),
-    'Motivo final': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed, evaluatedHospitalUnit }),
+    'Motivo final exato': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed }),
+    'Motivo final': diagnosticFinalReason(control, { sameOS, dateCompatible, medicineCompatibleInOS, barcodeCandidates, destinationOk, hasControlDateText, controlDateParsed }),
   };
 }
 
@@ -540,7 +615,8 @@ function diagnosticStatus(control) {
 function diagnosticFinalReason(control, context) {
   if (control.__status === 'Consumido') return `Consumida pela chave final ${control.__key}.`;
   if (control.__status === 'Parcialmente consumido') return `Parcialmente consumida pela chave final ${control.__key}; saldo restante ${control.__remaining}.`;
-  if (!context.evaluatedHospitalUnit) return 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.';
+  if (control.__status === 'Não elegível - unidade avaliada não identificada') return 'Unidade avaliada não identificada; otimizações não aplicadas por segurança.';
+  if (control.__inPeriod === false) return 'Linha preservada, mas não considerada por estar fora do período selecionado.';
   if (!context.destinationOk) return 'Unidade de Destino da otimização não corresponde à unidade avaliada.';
   if (!Number.isFinite(control.__available) || control.__available <= 0) return validationDetails(control, 'quantidade inválida');
   if (!control.__osNormalizada) return 'OS ausente ou inválida no controle; não é permitido associar sem OS Normalizada.';
@@ -623,20 +699,24 @@ function patientCompatible(a, b) {
   return overlap >= Math.min(2, minTokens) && overlap / minTokens >= 0.6;
 }
 
+
+function resolveHospitalUnitForRow(hospital) {
+  return String(hospital.__cliente || hospital.__hospital || hospital.__unidade || hospital.__nomeHospital || '').trim();
+}
+
+function buildInternalKey(unit, os, barcode) {
+  return unit && os && barcode ? `${unit}|${os}|${barcode}` : '';
+}
+
 function destinationCompatibleWithHospital(control, hospital) {
-  const destination = normalizeText(control.__unidadeDestino);
-  if (!destination) return false;
-
-  const hospitalNames = [hospital.__cliente, hospital.__hospital, hospital.__unidade, hospital.__nomeHospital]
-    .map(normalizeText)
-    .filter(Boolean);
-
-  if (!hospitalNames.length) return false;
-  return hospitalNames.some((hospitalName) => optimizationDestinationCompatible(destination, hospitalName));
+  return optimizationDestinationCompatible(control.__unidadeDestino, hospital.__unidadeHospital || resolveHospitalUnitForRow(hospital));
 }
 
 function findHospitalCandidatesForControl(control, hospitalRows) {
-  const sameOS = hospitalRows.filter((hospital) =>
+  const destinationRows = hospitalRows.filter((hospital) => destinationCompatibleWithHospital(control, hospital));
+  control.__destinationOk = destinationRows.length > 0;
+  control.__eligibleForOptimization = control.__destinationOk;
+  const sameOS = destinationRows.filter((hospital) =>
     hospital.__osNormalizada &&
     hospital.__osNormalizada === control.__osNormalizada
   );
@@ -656,7 +736,7 @@ function findHospitalCandidatesForControl(control, hospitalRows) {
     };
   }
 
-  const patientMedicineDestinationCandidates = hospitalRows.filter((hospital) =>
+  const patientMedicineDestinationCandidates = destinationRows.filter((hospital) =>
     patientCompatible(control.__paciente, hospital.__paciente) &&
     medicineCompatible(control.__medicamentoBase || control.__medicamentoNormalizado, hospital) &&
     destinationCompatibleWithHospital(control, hospital)
@@ -807,6 +887,8 @@ function validationDetails(control, exactReason) {
 
 function associationRecord(hospital, control, quantity, status, reason, availableBefore = 0) {
   return {
+    unidadeHospital: hospital.__unidadeHospital,
+    internalKey: hospital.__internalKey,
     osHospital: hospital.__os,
     osNormalizada: hospital.__osNormalizada,
     osControle: control?.__os ?? '',
@@ -888,13 +970,14 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
 
   copySheetValues(originalHospitalSheet, workbook.addWorksheet(REQUIRED_SHEETS[0]));
 
-  const controlColumns = Object.keys(stripInternal(controlRows[0] ?? {})).concat(['OS Normalizada', 'Medicamento Base', 'CodBarra Produto Hospital', 'Chave OS+CodBarra', 'Unidade de Origem capturada', 'Validade capturada', 'Lote Otimização com Validade', 'OS Hospital Associada', 'Data Associação', 'Tipo de Match', 'Confiança da Associação', 'Status Associação', 'Observação']);
+  const controlColumns = Object.keys(stripInternal(controlRows[0] ?? {})).concat(['OS Normalizada', 'Medicamento Base', 'CodBarra Produto Hospital', 'Chave OS+CodBarra', 'Chave Interna Unidade+OS+CodBarra', 'Unidade de Origem capturada', 'Validade capturada', 'Lote Otimização com Validade', 'OS Hospital Associada', 'Data Associação', 'Tipo de Match', 'Confiança da Associação', 'Status Associação', 'Observação']);
   addJsonSheet(workbook, REQUIRED_SHEETS[1], controlRows.map((row) => ({
     ...stripInternal(row),
     'OS Normalizada': row.__osNormalizada,
     'Medicamento Base': row.__medicamentoBase,
     'CodBarra Produto Hospital': row.__codBarraProdutoHospital,
     'Chave OS+CodBarra': row.__key,
+    'Chave Interna Unidade+OS+CodBarra': row.__internalKey || '',
     'Unidade de Origem capturada': row.__unidadeOrigem,
     'Validade capturada': row.__validade,
     'Lote Otimização com Validade': formatLotWithValidity(row.__lote, row.__validade),
@@ -910,6 +993,7 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
     'OS Normalizada': item.osNormalizada,
     CodBarra: item.codBarra,
     'Chave OS+CodBarra': item.key,
+    'Chave Interna Unidade+OS+CodBarra': item.internalKey,
     'Data Hospital': item.dataHospital,
     'Data Controle': item.dataControle,
     'Medicamento Hospital': item.medicamentoHospital,
@@ -925,10 +1009,11 @@ function buildOutputWorkbook(hospitalRows, controlRows, associations, validation
     'Tipo de Match': item.tipoMatch,
     'Confiança da Associação': item.confianca,
     Observação: item.observacao,
-  })), ['OS Normalizada', 'CodBarra', 'Chave OS+CodBarra', 'Data Hospital', 'Data Controle', 'Medicamento Hospital', 'Medicamento Controle', 'PrincipioAtivo', 'Qtde Prescrita', 'Qtde Otimizada', 'Lote Hospital', 'Origem da Otimização', 'Lote Otimização', 'Validade Otimização', 'Lote Otimização com Validade', 'Tipo de Match', 'Confiança da Associação', 'Observação']);
+  })), ['OS Normalizada', 'CodBarra', 'Chave OS+CodBarra', 'Chave Interna Unidade+OS+CodBarra', 'Data Hospital', 'Data Controle', 'Medicamento Hospital', 'Medicamento Controle', 'PrincipioAtivo', 'Qtde Prescrita', 'Qtde Otimizada', 'Lote Hospital', 'Origem da Otimização', 'Lote Otimização', 'Validade Otimização', 'Lote Otimização com Validade', 'Tipo de Match', 'Confiança da Associação', 'Observação']);
 
   const associationByHospitalRow = summarizeAssociations(associations);
-  const baixarRows = hospitalRows.filter((row) => !row.__isExcluded).map((row) => downloadRecord(row, associationByHospitalRow.get(row.__rowId)));
+  const baixarRows = hospitalRows.filter((row) => row.__inPeriod !== false && !row.__isExcluded).map((row) => downloadRecord(row, associationByHospitalRow.get(row.__rowId)));
+  baixarRows.sort((a, b) => normalizeText(a.Cliente).localeCompare(normalizeText(b.Cliente)) || String(formatDate(a.Data)).localeCompare(String(formatDate(b.Data))) || normalizeText(a.Paciente).localeCompare(normalizeText(b.Paciente)) || normalizeText(a['Medicamento Hospital']).localeCompare(normalizeText(b['Medicamento Hospital'])));
   addJsonSheet(workbook, REQUIRED_SHEETS[3], baixarRows);
   addJsonSheet(workbook, REQUIRED_SHEETS[4], baixarRows.map((row) => ({
     Data: row.Data,
@@ -961,6 +1046,7 @@ function downloadRecord(row, association) {
     'OS Normalizada': row.__osNormalizada,
     CodBarra: row.__codBarra,
     'Chave OS+CodBarra': row.__key,
+    'Chave Interna Unidade+OS+CodBarra': row.__internalKey || '',
     'Qtde Prescrita': row.__qtde,
     'Qtde Otimizada': optimizedQuantity,
     'Origem da Otimização': association?.origens?.length ? unique(association.origens).join('; ') : 'Sem otimização',
@@ -1141,7 +1227,9 @@ function validation(type, severity, sheet, line, row, message) {
     Lote: row.__lote ?? '',
     Quantidade: row.__available ?? row.__qtde ?? '',
     'Unidade destino': row.__unidadeDestino ?? '',
-    'Unidade avaliada': row.__unidadeAvaliada ?? '',
+    'Unidade avaliada': row.__unidadeAvaliada ?? row.__unidadeHospital ?? '',
+    'Unidade Hospitalar': row.__unidadeHospital ?? '',
+    'Chave Interna Unidade+OS+CodBarra': row.__internalKey ?? '',
     'Encontrou OS no hospital': row.__validationFoundOS ?? '',
     'Medicamento Hospital candidato coluna I': row.__validationMedicamentoHospitalCandidato ?? '',
     'Medicamento Alternativo candidato coluna O': row.__validationMedicamentoAlternativoCandidato ?? '',
