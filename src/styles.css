@@ -119,3 +119,21 @@ p { line-height: 1.65; }
 .status.success { color: #0f8f5f; }
 .status.error, .error { color: #b42318; }
 .hidden { display: none !important; }
+
+.date-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.date-grid label {
+  color: #34465d;
+  display: grid;
+  font-size: .95rem;
+  font-weight: 700;
+  gap: 6px;
+}
+
+@media (max-width: 900px) {
+  .date-grid { grid-template-columns: 1fr; }
+}
