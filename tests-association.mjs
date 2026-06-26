@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { associateRows, downloadRecord, formatLotWithValidity, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
+import { applyAnalysisPeriod, associateRows, downloadRecord, excelSerialToLocalDate, formatLotWithValidity, isWithinAnalysisPeriod, normalizeAnalysisPeriod, normalizeCalendarDate, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
 
 function fakeRow(values) {
   return {
@@ -613,3 +613,47 @@ assert.ok(multiAssociations.some((item) => item.hospitalRowId === 203 && item.co
 assert.equal(new Set(multiAssociations.map((item) => item.internalKey)).size, 3, 'mesmo OS + CodBarra em hospitais diferentes usa chave interna separada');
 assert.ok(!multiAssociations.some((item) => item.hospitalRowId === 204 || item.controlRowId === 208), 'filtro de data limita associações ao período selecionado');
 assert.equal(multiControlRows[3].__status, 'Fora do período de análise', 'controle fora do período é preservado com status específico');
+
+
+const excelSerialDate = excelSerialToLocalDate(46199);
+assert.equal(excelSerialDate.getFullYear(), 2026, 'serial Excel 46199 preserva o ano local 2026');
+assert.equal(excelSerialDate.getMonth(), 5, 'serial Excel 46199 preserva o mês local junho');
+assert.equal(excelSerialDate.getDate(), 26, 'serial Excel 46199 preserva o dia local 26');
+assert.equal(excelSerialDate.getHours(), 0, 'serial Excel 46199 é normalizado para meia-noite local');
+assert.equal(new Intl.DateTimeFormat('pt-BR').format(excelSerialDate), '26/06/2026', 'serial Excel 46199 formata como 26/06/2026');
+
+const sameDayPeriod = normalizeAnalysisPeriod('2026-06-26', '2026-06-26');
+assert.equal(sameDayPeriod.valid, true, 'período de um único dia em 26/06/2026 é válido');
+assert.equal(isWithinAnalysisPeriod(46199, sameDayPeriod), true, 'serial Excel 46199 entra no filtro inclusivo de 26/06/2026 a 26/06/2026');
+assert.equal(isWithinAnalysisPeriod('26/06/2026', sameDayPeriod), true, 'texto 26/06/2026 entra no filtro inclusivo de um dia');
+assert.equal(isWithinAnalysisPeriod('25/06/2026', sameDayPeriod), false, '25/06/2026 é excluído do filtro de 26/06/2026 a 26/06/2026');
+assert.equal(isWithinAnalysisPeriod('27/06/2026', sameDayPeriod), false, '27/06/2026 é excluído do filtro de 26/06/2026 a 26/06/2026');
+
+const startOnlyPeriod = normalizeAnalysisPeriod('2026-06-26', '');
+assert.equal(isWithinAnalysisPeriod(46199, startOnlyPeriod), true, 'serial Excel 46199 entra no filtro a partir de 26/06/2026');
+assert.equal(isWithinAnalysisPeriod('27/06/2026', startOnlyPeriod), true, '27/06/2026 entra no filtro a partir de 26/06/2026');
+assert.equal(isWithinAnalysisPeriod('25/06/2026', startOnlyPeriod), false, '25/06/2026 é excluído do filtro a partir de 26/06/2026');
+
+const endOnlyPeriod = normalizeAnalysisPeriod('', '2026-06-26');
+assert.equal(isWithinAnalysisPeriod(46199, endOnlyPeriod), true, 'serial Excel 46199 entra no filtro até 26/06/2026');
+assert.equal(isWithinAnalysisPeriod('25/06/2026', endOnlyPeriod), true, '25/06/2026 entra no filtro até 26/06/2026');
+assert.equal(isWithinAnalysisPeriod('27/06/2026', endOnlyPeriod), false, '27/06/2026 é excluído do filtro até 26/06/2026');
+
+const periodHospitalRows = [
+  hospital({ __rowId: 301, __data: '25/06/2026', __os: '2506202', __codBarra: '7892506' }),
+  hospital({ __rowId: 302, __data: 46199, __os: '2606202', __codBarra: '7892606' }),
+  hospital({ __rowId: 303, __data: '27/06/2026', __os: '2706202', __codBarra: '7892706' }),
+];
+const periodControlRows = [
+  control({ __rowId: 304, __data: 46199, __os: '2606202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+  control({ __rowId: 305, __data: '26/06/2026', __os: '2606202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+  control({ __rowId: 306, __data: '26/06/2026', __os: '2606202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+  control({ __rowId: 307, __data: '26/06/2026', __os: '2606202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+  control({ __rowId: 308, __data: '26/06/2026', __os: '2606202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+  control({ __rowId: 309, __data: '25/06/2026', __os: '2506202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+  control({ __rowId: 310, __data: '27/06/2026', __os: '2706202', __qtde: 1, __unidadeDestino: 'Hospital Teste' }),
+];
+applyAnalysisPeriod(periodHospitalRows, periodControlRows, sameDayPeriod, []);
+assert.deepEqual(periodHospitalRows.map((row) => row.__inPeriod), [false, true, false], 'filtro de 26/06/2026 inclui somente a linha hospitalar com serial 46199');
+assert.equal(periodControlRows.filter((row) => row.__inPeriod).length, 5, 'filtro de 26/06/2026 considera as 5 otimizações dessa data');
+assert.equal(normalizeCalendarDate(46199).getDate(), 26, 'normalizeCalendarDate mantém serial 46199 no dia civil 26');
