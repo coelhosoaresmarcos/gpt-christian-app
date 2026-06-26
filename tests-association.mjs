@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { applyAnalysisPeriod, associateRows, downloadRecord, excelSerialToLocalDate, formatLotWithValidity, isWithinAnalysisPeriod, normalizeAnalysisPeriod, normalizeCalendarDate, normalizeImportedExcelDate, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
+import { applyAnalysisPeriod, associateRows, dateKeyFromValue, downloadRecord, excelSerialToDateKey, excelSerialToLocalDate, formatLotWithValidity, isWithinAnalysisPeriod, isWithinAnalysisPeriodByKey, normalizeAnalysisPeriod, normalizeCalendarDate, normalizeImportedExcelDate, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
 
 function fakeRow(values) {
   return {
@@ -614,6 +614,16 @@ assert.equal(new Set(multiAssociations.map((item) => item.internalKey)).size, 3,
 assert.ok(!multiAssociations.some((item) => item.hospitalRowId === 204 || item.controlRowId === 208), 'filtro de data limita associações ao período selecionado');
 assert.equal(multiControlRows[3].__status, 'Fora do período de análise', 'controle fora do período é preservado com status específico');
 
+
+assert.equal(excelSerialToDateKey(46199), '2026-06-26', 'serial Excel 46199 vira chave civil 2026-06-26');
+assert.equal(dateKeyFromValue(46199), '2026-06-26', 'dateKeyFromValue converte número serial Excel 46199');
+assert.equal(dateKeyFromValue('46199'), '2026-06-26', 'dateKeyFromValue converte string numérica serial Excel 46199');
+assert.equal(dateKeyFromValue(new Date(Date.UTC(2026, 5, 26))), '2026-06-26', 'dateKeyFromValue usa componentes UTC de Date');
+assert.equal(dateKeyFromValue('26/06/2026'), '2026-06-26', 'dateKeyFromValue converte texto brasileiro');
+assert.equal(dateKeyFromValue('2026-06-26'), '2026-06-26', 'dateKeyFromValue preserva texto ISO');
+assert.equal(isWithinAnalysisPeriodByKey('2026-06-26', '2026-06-26', '2026-06-26'), true, 'filtro por chave inclui 2026-06-26');
+assert.equal(isWithinAnalysisPeriodByKey('2026-06-25', '2026-06-26', '2026-06-26'), false, 'filtro por chave exclui 2026-06-25');
+assert.equal(isWithinAnalysisPeriodByKey('2026-06-27', '2026-06-26', '2026-06-26'), false, 'filtro por chave exclui 2026-06-27');
 
 const excelSerialDate = excelSerialToLocalDate(46199);
 assert.equal(excelSerialDate.getFullYear(), 2026, 'serial Excel 46199 preserva o ano local 2026');

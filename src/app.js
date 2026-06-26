@@ -186,42 +186,44 @@ async function processChristianWorkbook({ hospitalFile, controlFile, periodStart
 }
 
 function normalizeAnalysisPeriod(start, end) {
-  const startDate = start ? normalizeCalendarDate(start) : null;
-  const endDate = end ? normalizeCalendarDate(end) : null;
-
-  if (endDate) {
-    endDate.setHours(23, 59, 59, 999);
-  }
+  const startKey = start ? dateKeyFromValue(start) : '';
+  const endKey = end ? dateKeyFromValue(end) : '';
 
   return {
-    start: startDate,
-    end: endDate,
-    valid: !(startDate && endDate && startDate > endDate),
+    startKey,
+    endKey,
+    start: startKey,
+    end: endKey,
+    valid: !(startKey && endKey && startKey > endKey),
   };
 }
 
-function isWithinAnalysisPeriod(value, period) {
-  const date = normalizeCalendarDate(value);
-
-  if (!date) return false;
-
-  if (period?.start && date < period.start) return false;
-  if (period?.end && date > period.end) return false;
-
+function isWithinAnalysisPeriodByKey(dateKey, periodStart, periodEnd) {
+  if (!dateKey) return false;
+  if (periodStart && dateKey < periodStart) return false;
+  if (periodEnd && dateKey > periodEnd) return false;
   return true;
 }
 
+function isWithinAnalysisPeriod(value, period) {
+  return isWithinAnalysisPeriodByKey(dateKeyFromValue(value), period?.startKey ?? period?.start ?? '', period?.endKey ?? period?.end ?? '');
+}
+
 function describePeriod(period) {
-  if (period?.start && period?.end) return `${formatDate(period.start)} a ${formatDate(period.end)}`;
-  if (period?.start) return `a partir de ${formatDate(period.start)}`;
-  if (period?.end) return `até ${formatDate(period.end)}`;
+  if (period?.startKey && period?.endKey) return `${formatDate(period.startKey)} a ${formatDate(period.endKey)}`;
+  if (period?.startKey) return `a partir de ${formatDate(period.startKey)}`;
+  if (period?.endKey) return `até ${formatDate(period.endKey)}`;
   return 'Todas as datas';
 }
 
 function applyAnalysisPeriod(hospitalRows, controlRows, period, validations) {
-  for (const row of hospitalRows) row.__inPeriod = isWithinAnalysisPeriod(row.__data, period);
+  for (const row of hospitalRows) {
+    row.__dataKey = row.__dataKey || dateKeyFromValue(row.__data);
+    row.__inPeriod = isWithinAnalysisPeriodByKey(row.__dataKey, period?.startKey ?? '', period?.endKey ?? '');
+  }
   for (const control of controlRows) {
-    control.__inPeriod = isWithinAnalysisPeriod(control.__data, period);
+    control.__dataKey = control.__dataKey || dateKeyFromValue(control.__data);
+    control.__inPeriod = isWithinAnalysisPeriodByKey(control.__dataKey, period?.startKey ?? '', period?.endKey ?? '');
     control.__periodLabel = describePeriod(period);
     if (!control.__inPeriod) {
       control.__status = 'Fora do período de análise';
@@ -258,6 +260,7 @@ function readHospitalRows(sheet, validations) {
       ...object,
       __rowId: rowNumber,
       __data: normalizeImportedExcelDate(hospitalDateRaw),
+      __dataKey: dateKeyFromValue(hospitalDateRaw),
       __cliente: String(getByCandidates(object, ['Cliente']) ?? physical(1) ?? ''),
       __hospital: String(getByCandidates(object, ['Hospital']) ?? ''),
       __unidade: String(getByCandidates(object, ['Unidade']) ?? ''),
@@ -311,6 +314,7 @@ function readControlRows(sheet, validations) {
       ...object,
       __rowId: rowNumber,
       __data: normalizeImportedExcelDate(controlDateRaw),
+      __dataKey: dateKeyFromValue(controlDateRaw),
       __os: String(getByCandidates(object, ['Ordem de serviço', 'Ordem de Servico', 'OS', 'Ordem Serviço'], 2) ?? ''),
       __unidadeOrigem: String(getByExactHeaderOrPosition(object, ['Unidade de Origem', 'Unidade Origem', 'Origem'], 4) ?? ''),
       __unidadeDestino: String(getByExactHeaderOrPosition(object, ['Unidade de Destino', 'Unidade Destino', 'Destino'], 5) ?? ''),
@@ -1390,6 +1394,55 @@ function toNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function excelSerialToDateKey(serial) {
+  if (!Number.isFinite(Number(serial))) return '';
+  const excelEpochUtc = Date.UTC(1899, 11, 30);
+  const milliseconds = Math.round(Number(serial) * 86400000);
+  const utcDate = new Date(excelEpochUtc + milliseconds);
+
+  return `${utcDate.getUTCFullYear()}-${pad2(utcDate.getUTCMonth() + 1)}-${pad2(utcDate.getUTCDate())}`;
+}
+
+function isValidDateKey(year, month, day) {
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return date.getUTCFullYear() === Number(year) && date.getUTCMonth() === Number(month) - 1 && date.getUTCDate() === Number(day);
+}
+
+function dateKeyFromValue(value) {
+  if (value == null || value === '') return '';
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return excelSerialToDateKey(value);
+  }
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return `${value.getUTCFullYear()}-${pad2(value.getUTCMonth() + 1)}-${pad2(value.getUTCDate())}`;
+  }
+
+  const text = String(value).trim();
+
+  if (/^\d{5}(?:\.\d+)?$/.test(text)) {
+    return excelSerialToDateKey(Number(text));
+  }
+
+  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso && isValidDateKey(iso[1], iso[2], iso[3])) {
+    return `${iso[1]}-${pad2(iso[2])}-${pad2(iso[3])}`;
+  }
+
+  const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (br) {
+    const year = br[3].length === 2 ? `20${br[3]}` : br[3];
+    if (isValidDateKey(year, br[2], br[1])) return `${year}-${pad2(br[2])}-${pad2(br[1])}`;
+  }
+
+  return '';
+}
+
 function excelSerialToLocalDate(serial) {
   const utcDate = new Date(Math.round((serial - 25569) * 86400 * 1000));
 
@@ -1465,20 +1518,22 @@ function normalizeCalendarDate(value) {
 }
 
 function sameDayAndMonth(a, b) {
-  const first = normalizeCalendarDate(a);
-  const second = normalizeCalendarDate(b);
+  const first = typeof a === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a) ? a : dateKeyFromValue(a);
+  const second = typeof b === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b) ? b : dateKeyFromValue(b);
   if (!first || !second) return false;
-  return first.getDate() === second.getDate() && first.getMonth() === second.getMonth();
+  return first.slice(5) === second.slice(5);
 }
 
 function sameYear(a, b) {
-  const first = normalizeCalendarDate(a);
-  const second = normalizeCalendarDate(b);
+  const first = typeof a === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a) ? a : dateKeyFromValue(a);
+  const second = typeof b === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b) ? b : dateKeyFromValue(b);
   if (!first || !second) return false;
-  return first.getFullYear() === second.getFullYear();
+  return first.slice(0, 4) === second.slice(0, 4);
 }
 
 function formatDate(value) {
+  const key = dateKeyFromValue(value);
+  if (key) return `${key.slice(8, 10)}/${key.slice(5, 7)}/${key.slice(0, 4)}`;
   const date = parseDate(value);
   if (!date) return String(value ?? '');
   return new Intl.DateTimeFormat('pt-BR').format(date);
@@ -1512,8 +1567,11 @@ export {
   associateRows,
   buildKey,
   downloadRecord,
+  dateKeyFromValue,
+  excelSerialToDateKey,
   excelSerialToLocalDate,
   isWithinAnalysisPeriod,
+  isWithinAnalysisPeriodByKey,
   normalizeAnalysisPeriod,
   normalizeBarcode,
   normalizeCalendarDate,
