@@ -252,10 +252,12 @@ function readHospitalRows(sheet, validations) {
     const medication = shouldUseHospitalMedicineFallback(rawMedicine) ? columnI : rawMedicine;
     const alternativeMedication = columnO || getByExactHeader(object, ['Medicamento Alternativo', 'Nome Comercial', 'Comercial']);
 
+    const hospitalDateRaw = getByCandidates(object, ['Data', 'Dt Atendimento', 'Data Atendimento']) ?? physical(3);
+
     const hospitalRow = {
       ...object,
       __rowId: rowNumber,
-      __data: getByCandidates(object, ['Data', 'Dt Atendimento', 'Data Atendimento']) ?? physical(3),
+      __data: normalizeImportedExcelDate(hospitalDateRaw),
       __cliente: String(getByCandidates(object, ['Cliente']) ?? physical(1) ?? ''),
       __hospital: String(getByCandidates(object, ['Hospital']) ?? ''),
       __unidade: String(getByCandidates(object, ['Unidade']) ?? ''),
@@ -302,10 +304,13 @@ function readControlRows(sheet, validations) {
     const object = rowToObject(row, headers);
     if (isEmptyObject(object)) return;
 
+    const physical = (index) => getPhysicalCell(row, index);
+    const controlDateRaw = getByCandidates(object, ['Data', 'Dt', 'Dt Otimização', 'Data Otimizacao']) ?? physical(3);
+
     const controlRow = {
       ...object,
       __rowId: rowNumber,
-      __data: getByCandidates(object, ['Data', 'Dt', 'Data Otimização', 'Data Otimizacao'], 3),
+      __data: normalizeImportedExcelDate(controlDateRaw),
       __os: String(getByCandidates(object, ['Ordem de serviço', 'Ordem de Servico', 'OS', 'Ordem Serviço'], 2) ?? ''),
       __unidadeOrigem: String(getByExactHeaderOrPosition(object, ['Unidade de Origem', 'Unidade Origem', 'Origem'], 4) ?? ''),
       __unidadeDestino: String(getByExactHeaderOrPosition(object, ['Unidade de Destino', 'Unidade Destino', 'Destino'], 5) ?? ''),
@@ -1399,8 +1404,25 @@ function excelSerialToLocalDate(serial) {
   );
 }
 
+function normalizeImportedExcelDate(value) {
+  if (!(value instanceof Date)) return value;
+
+  return new Date(
+    value.getUTCFullYear(),
+    value.getUTCMonth(),
+    value.getUTCDate(),
+    0,
+    0,
+    0,
+    0,
+  );
+}
+
 function parseDate(value) {
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value instanceof Date) {
+    const normalized = normalizeImportedExcelDate(value);
+    return Number.isNaN(normalized.getTime()) ? null : normalized;
+  }
   if (typeof value === 'number') {
     const parsedNumber = excelSerialToLocalDate(value);
     return Number.isNaN(parsedNumber.getTime()) ? null : parsedNumber;
@@ -1495,6 +1517,7 @@ export {
   normalizeAnalysisPeriod,
   normalizeBarcode,
   normalizeCalendarDate,
+  normalizeImportedExcelDate,
   normalizeMedicineBase,
   normalizeMedicineProduct,
   normalizeOS,

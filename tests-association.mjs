@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { applyAnalysisPeriod, associateRows, downloadRecord, excelSerialToLocalDate, formatLotWithValidity, isWithinAnalysisPeriod, normalizeAnalysisPeriod, normalizeCalendarDate, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
+import { applyAnalysisPeriod, associateRows, downloadRecord, excelSerialToLocalDate, formatLotWithValidity, isWithinAnalysisPeriod, normalizeAnalysisPeriod, normalizeCalendarDate, normalizeImportedExcelDate, normalizeMedicineBase, normalizeMedicineProduct, normalizeOS, readControlRows, readHospitalRows, summarizeAssociations } from './src/app.js';
 
 function fakeRow(values) {
   return {
@@ -628,6 +628,26 @@ assert.equal(isWithinAnalysisPeriod(46199, sameDayPeriod), true, 'serial Excel 4
 assert.equal(isWithinAnalysisPeriod('26/06/2026', sameDayPeriod), true, 'texto 26/06/2026 entra no filtro inclusivo de um dia');
 assert.equal(isWithinAnalysisPeriod('25/06/2026', sameDayPeriod), false, '25/06/2026 é excluído do filtro de 26/06/2026 a 26/06/2026');
 assert.equal(isWithinAnalysisPeriod('27/06/2026', sameDayPeriod), false, '27/06/2026 é excluído do filtro de 26/06/2026 a 26/06/2026');
+
+const excelJsDate = new Date(Date.UTC(2026, 5, 26, 0, 0, 0));
+const normalizedExcelJsDate = normalizeImportedExcelDate(excelJsDate);
+assert.equal(normalizedExcelJsDate.getFullYear(), 2026, 'normalizeImportedExcelDate preserva o ano UTC como ano civil local');
+assert.equal(normalizedExcelJsDate.getMonth(), 5, 'normalizeImportedExcelDate preserva o mês UTC como mês civil local');
+assert.equal(normalizedExcelJsDate.getDate(), 26, 'normalizeImportedExcelDate preserva o dia UTC como dia civil local');
+assert.equal(normalizedExcelJsDate.getHours(), 0, 'normalizeImportedExcelDate normaliza para 00:00 local');
+assert.equal(isWithinAnalysisPeriod(excelJsDate, sameDayPeriod), true, 'filtro de 26/06/2026 inclui Date importado pelo ExcelJS em UTC');
+
+const excelJsHospitalRows = readHospitalRows(fakeSheet([
+  ['Cliente', 'X', 'Data', 'Paciente', 'E', 'F', 'G', 'OS', 'Medicamento Hospital', 'J', 'Qtde', 'L', 'M', 'N', 'Medicamento Alternativo', 'PrincipioAtivo', 'Q', 'R', 'Lote', 'T', 'U', 'CodBarra'],
+  ['Hospital Teste', null, excelJsDate, 'Paciente', null, null, null, '2606202', 'GENLIBBS', null, 1, null, null, null, 'GENLIBBS', 'GENCITABINA', null, null, 'L1', null, null, '7892606'],
+]), []);
+const excelJsControlRows = readControlRows(fakeSheet([
+  ['Tipo/Motivo', 'OS', 'Data Otimização', 'Unidade de Origem', 'Unidade de Destino', 'Paciente', 'Medicamento', 'Quantidade', 'Lote', 'Validade'],
+  ['OTM', '2606202', excelJsDate, 'Origem', 'Hospital Teste', 'Paciente', 'GENLIBBS', 1, 'L1', '30/06/2027'],
+]), []);
+applyAnalysisPeriod(excelJsHospitalRows, excelJsControlRows, sameDayPeriod, []);
+assert.equal(excelJsHospitalRows[0].__inPeriod, true, 'readHospitalRows normaliza Date do ExcelJS e inclui a linha no período de 26/06/2026');
+assert.equal(excelJsControlRows[0].__inPeriod, true, 'readControlRows normaliza Date do ExcelJS e inclui a otimização no período de 26/06/2026');
 
 const startOnlyPeriod = normalizeAnalysisPeriod('2026-06-26', '');
 assert.equal(isWithinAnalysisPeriod(46199, startOnlyPeriod), true, 'serial Excel 46199 entra no filtro a partir de 26/06/2026');
