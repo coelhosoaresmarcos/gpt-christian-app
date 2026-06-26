@@ -186,18 +186,28 @@ async function processChristianWorkbook({ hospitalFile, controlFile, periodStart
 }
 
 function normalizeAnalysisPeriod(start, end) {
-  const startDate = start ? parseDate(`${start}T00:00:00`) : null;
-  const endDate = end ? parseDate(`${end}T00:00:00`) : null;
-  if (startDate) startDate.setHours(0,0,0,0);
-  if (endDate) endDate.setHours(23,59,59,999);
-  return { start: startDate, end: endDate, valid: !(startDate && endDate && startDate > endDate) };
+  const startDate = start ? normalizeCalendarDate(start) : null;
+  const endDate = end ? normalizeCalendarDate(end) : null;
+
+  if (endDate) {
+    endDate.setHours(23, 59, 59, 999);
+  }
+
+  return {
+    start: startDate,
+    end: endDate,
+    valid: !(startDate && endDate && startDate > endDate),
+  };
 }
 
 function isWithinAnalysisPeriod(value, period) {
-  const date = parseDate(value);
-  if (!date) return true;
+  const date = normalizeCalendarDate(value);
+
+  if (!date) return false;
+
   if (period?.start && date < period.start) return false;
   if (period?.end && date > period.end) return false;
+
   return true;
 }
 
@@ -1375,13 +1385,29 @@ function toNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function excelSerialToLocalDate(serial) {
+  const utcDate = new Date(Math.round((serial - 25569) * 86400 * 1000));
+
+  return new Date(
+    utcDate.getUTCFullYear(),
+    utcDate.getUTCMonth(),
+    utcDate.getUTCDate(),
+    0,
+    0,
+    0,
+    0,
+  );
+}
+
 function parseDate(value) {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   if (typeof value === 'number') {
-    const parsedNumber = new Date(Math.round((value - 25569) * 86400 * 1000));
+    const parsedNumber = excelSerialToLocalDate(value);
     return Number.isNaN(parsedNumber.getTime()) ? null : parsedNumber;
   }
   const text = String(value ?? '').trim();
+  const isoDateOnly = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoDateOnly) return buildStrictDate(Number(isoDateOnly[3]), Number(isoDateOnly[2]), Number(isoDateOnly[1]));
   const br = text.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4})|(\d{4}))$/);
   if (br) return buildStrictDate(Number(br[1]), Number(br[2]), normalizeDateYear(br[3] || br[4]));
   const parsed = new Date(text);
@@ -1400,16 +1426,32 @@ function buildStrictDate(day, month, year) {
   return date;
 }
 
+function normalizeCalendarDate(value) {
+  const date = parseDate(value);
+
+  if (!date) return null;
+
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    0,
+    0,
+    0,
+    0,
+  );
+}
+
 function sameDayAndMonth(a, b) {
-  const first = parseDate(a);
-  const second = parseDate(b);
+  const first = normalizeCalendarDate(a);
+  const second = normalizeCalendarDate(b);
   if (!first || !second) return false;
   return first.getDate() === second.getDate() && first.getMonth() === second.getMonth();
 }
 
 function sameYear(a, b) {
-  const first = parseDate(a);
-  const second = parseDate(b);
+  const first = normalizeCalendarDate(a);
+  const second = normalizeCalendarDate(b);
   if (!first || !second) return false;
   return first.getFullYear() === second.getFullYear();
 }
@@ -1444,10 +1486,15 @@ function setStatus(message, type) {
 }
 
 export {
+  applyAnalysisPeriod,
   associateRows,
   buildKey,
   downloadRecord,
+  excelSerialToLocalDate,
+  isWithinAnalysisPeriod,
+  normalizeAnalysisPeriod,
   normalizeBarcode,
+  normalizeCalendarDate,
   normalizeMedicineBase,
   normalizeMedicineProduct,
   normalizeOS,
